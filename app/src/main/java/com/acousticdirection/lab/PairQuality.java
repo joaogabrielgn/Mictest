@@ -19,6 +19,18 @@ public final class PairQuality {
             double maxInterpolationGapMs,double angularSpeed,
             double translationMeters,boolean anchor,
             boolean clocksCompatible,boolean hasAmbiguousTone){
+        return evaluate(coherence,peakRatio,altPeakRatio,levelDbfs,clipped,
+            maxInterpolationGapMs,angularSpeed,translationMeters,anchor,
+            clocksCompatible,hasAmbiguousTone,false,.58);
+    }
+    public static Verdict evaluate(double coherence,double peakRatio,
+            double altPeakRatio,double levelDbfs,boolean clipped,
+            double maxInterpolationGapMs,double angularSpeed,
+            double translationMeters,boolean anchor,
+            boolean clocksCompatible,boolean hasAmbiguousTone,
+            boolean temporalStable,double threshold){
+        if(!Double.isFinite(threshold)||threshold<.4||threshold>.85)
+            throw new IllegalArgumentException("quality threshold");
         if(!clocksCompatible)return new Verdict(0,false,"RELOGIOS_NAO_VERIFICADOS");
         if(!Double.isFinite(maxInterpolationGapMs)||maxInterpolationGapMs>70)
             return new Verdict(0,false,"DESALINHAMENTO_CAMERA_AUDIO");
@@ -42,7 +54,10 @@ public final class PairQuality {
         double quality=.30*c+.22*uniqueness+.16*peak+
             .10*level+.13*time+.09*motion;
         if(hasAmbiguousTone)quality*=.5;
-        boolean accepted=quality>=.58 && !hasAmbiguousTone;
+        // The overlap in FFT windows makes temporal support correlated; it
+        // contributes only a small bonus, never overrides any hard veto.
+        if(temporalStable)quality=Math.min(1.0,quality+.02);
+        boolean accepted=quality>=threshold && !hasAmbiguousTone;
         return new Verdict(quality,accepted,
             accepted?"ACEITO":hasAmbiguousTone?"TONAL_AMBIGUO":"QUALIDADE_INSUFICIENTE");
     }

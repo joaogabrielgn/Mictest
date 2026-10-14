@@ -22,6 +22,7 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import com.google.ar.core.ArCoreApk;
@@ -65,6 +66,7 @@ public final class ARCalibrationActivity extends Activity {
     private volatile String lastRejection="Aguardando áudio",lastTimestampStatus="—";
     private volatile double lastAgeMs=Double.NaN,lastGapMs=Double.NaN,lastScore=Double.NaN;
     private int windows=0,matched=0,accepted=0,rejected=0;
+    private volatile double qualityThreshold=.58;
     private long lastUi=0;
     private LinearLayout steps,techPanel;
     private TextView heading,statusChip,guidance,progressLabel,techDetails;
@@ -144,7 +146,7 @@ public final class ARCalibrationActivity extends Activity {
                 if(threadActive){
                     Toast.makeText(this,"Pare a gravação antes de marcar outra fonte.",
                         Toast.LENGTH_SHORT).show();
-                }else if(e.getY()>dp(88)&&e.getY()<v.getHeight()-dp(210))
+                }else if(e.getY()>dp(88)&&e.getY()<v.getHeight()-dp(180))
                     renderer.markAt(e.getX(),e.getY());
             }
             return true;
@@ -168,19 +170,19 @@ public final class ARCalibrationActivity extends Activity {
         root.addView(bar,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
 
         LinearLayout sheet=new LinearLayout(this);sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(dp(16),dp(13),dp(16),dp(12));
+        sheet.setPadding(dp(12),dp(7),dp(12),dp(7));
         sheet.setBackground(panel(PANEL,23));
         steps=new LinearLayout(this);steps.setOrientation(LinearLayout.HORIZONTAL);
-        sheet.addView(steps,new LinearLayout.LayoutParams(-1,dp(26)));
+        sheet.addView(steps,new LinearLayout.LayoutParams(-1,dp(22)));
         guidance=text("Toque no objeto que está emitindo som",14,INK,true);
-        LinearLayout.LayoutParams guideParams=new LinearLayout.LayoutParams(-1,dp(30));
+        LinearLayout.LayoutParams guideParams=new LinearLayout.LayoutParams(-1,dp(23));
         guideParams.topMargin=dp(4);sheet.addView(guidance,guideParams);
         LinearLayout metrics=new LinearLayout(this);metrics.setOrientation(LinearLayout.HORIZONTAL);
-        sheet.addView(metrics,new LinearLayout.LayoutParams(-1,dp(58)));
+        sheet.addView(metrics,new LinearLayout.LayoutParams(-1,dp(45)));
         String[] names={"Pares","Cobertura","Qualidade","Erro"};
         for(int i=0;i<names.length;i++){
             LinearLayout cell=new LinearLayout(this);cell.setOrientation(LinearLayout.VERTICAL);
-            cell.setPadding(dp(8),dp(6),dp(6),dp(3));
+            cell.setPadding(dp(8),dp(3),dp(6),0);
             cell.setBackground(panel(SURFACE,10));
             LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-1,1);
             lp.setMargins(dp(3),0,dp(3),0);metrics.addView(cell,lp);
@@ -192,12 +194,12 @@ public final class ARCalibrationActivity extends Activity {
         progress.setMax(100);progress.setProgressTintList(
             android.content.res.ColorStateList.valueOf(TEAL));
         LinearLayout.LayoutParams progressLp=new LinearLayout.LayoutParams(-1,dp(5));
-        progressLp.setMargins(dp(6),dp(8),dp(6),dp(4));sheet.addView(progress,progressLp);
+        progressLp.setMargins(dp(6),dp(4),dp(6),dp(2));sheet.addView(progress,progressLp);
         progressLabel=text("Aguardando referência",11,DIM,false);
         sheet.addView(progressLabel);
         LinearLayout buttons=new LinearLayout(this);buttons.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams buttonsLp=new LinearLayout.LayoutParams(-1,dp(51));
-        buttonsLp.topMargin=dp(8);sheet.addView(buttons,buttonsLp);
+        LinearLayout.LayoutParams buttonsLp=new LinearLayout.LayoutParams(-1,dp(44));
+        buttonsLp.topMargin=dp(4);sheet.addView(buttons,buttonsLp);
         primary=action("Marque a fonte",this::primaryAction,true);
         buttons.addView(primary,new LinearLayout.LayoutParams(0,-1,2.3f));
         resetButton=action("Reiniciar",this::reset,false);
@@ -211,16 +213,33 @@ public final class ARCalibrationActivity extends Activity {
             techPanel.setVisibility(detailsExpanded?View.VISIBLE:View.GONE);
             techButton.setText(detailsExpanded?"Ocultar detalhes  ▴":"Detalhes técnicos  ▾");
         },false);
-        LinearLayout.LayoutParams tLp=new LinearLayout.LayoutParams(-1,dp(38));
-        tLp.topMargin=dp(5);sheet.addView(techButton,tLp);
+        LinearLayout.LayoutParams tLp=new LinearLayout.LayoutParams(-1,dp(29));
+        tLp.topMargin=dp(3);sheet.addView(techButton,tLp);
         techPanel=new LinearLayout(this);techPanel.setOrientation(LinearLayout.VERTICAL);
         techPanel.setVisibility(View.GONE);techPanel.setBackground(panel(SURFACE,10));
         techPanel.setPadding(dp(10),dp(8),dp(10),dp(8));
         techDetails=text("Diagnósticos indisponíveis",10,DIM,false);
         techDetails.setMaxLines(7);techPanel.addView(techDetails);
         sheet.addView(techPanel);
+        TextView qualityLabel=text("Qualidade mínima (avançado): 58%",11,DIM,false);
+        LinearLayout.LayoutParams qlp=new LinearLayout.LayoutParams(-1,dp(21));
+        qlp.topMargin=dp(6);techPanel.addView(qualityLabel,qlp);
+        SeekBar threshold=new SeekBar(this);
+        threshold.setMax(35);threshold.setProgress(18);
+        threshold.setProgressTintList(android.content.res.ColorStateList.valueOf(TEAL));
+        threshold.setThumbTintList(android.content.res.ColorStateList.valueOf(TEAL));
+        threshold.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            @Override public void onProgressChanged(SeekBar bar,int value,boolean byUser){
+                qualityThreshold=.40+value*.01;
+                qualityLabel.setText(String.format(Locale.US,
+                    "Qualidade mínima (avançado): %.0f%%",qualityThreshold*100));
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar){}
+            @Override public void onStopTrackingTouch(SeekBar bar){}
+        });
+        techPanel.addView(threshold,new LinearLayout.LayoutParams(-1,dp(28)));
         FrameLayout.LayoutParams bottom=new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM);
-        bottom.setMargins(dp(10),0,dp(10),dp(9));
+        bottom.setMargins(dp(9),0,dp(9),dp(5));
         root.addView(sheet,bottom);
         setContentView(root);
     }
@@ -259,7 +278,9 @@ public final class ARCalibrationActivity extends Activity {
                 tip="O perfil será fixado; depois faremos outra gravação";break;
             case VALIDATING:headline="Perfil congelado";cta="Iniciar validação";
                 tip="Faça uma nova varredura; ela não ajustará o perfil";break;
-            default:headline="Sessão concluída";cta="Ver resultado / exportar";
+            default:headline=calibration.validate().status.equals("VALIDACAO_TDOA_OK")?
+                "Validação concluída":"Concluído • conferir erro";
+                cta="Ver resultado / exportar";
                 tip="Abra a exportação para compartilhar WAVs e CSVs";break;
         }
         statusChip.setText(headline);primary.setText(cta);
@@ -519,7 +540,8 @@ public final class ARCalibrationActivity extends Activity {
             pose==null?Double.POSITIVE_INFINITY:pose.angularSpeedDegSec,
             pose==null?Double.POSITIVE_INFINITY:pose.translationFromMarkMeters,
             pose!=null&&pose.anchorMode,synced,
-            "TONAL_AMBIGUO".equals(event.window.status));
+            "TONAL_AMBIGUO".equals(event.window.status),
+            event.window.temporalStable,qualityThreshold);
         String rejection=preliminaryRejection!=null?preliminaryRejection:
             pose==null?match.status:quality.reason;
         boolean validPair=quality.accepted && flow.canCollect(event.timeNs);
