@@ -180,7 +180,7 @@ public class MainActivity extends Activity {
         BufferedWriter csvOut = null, imuOut = null, continuousOut = null;
         long frames = 0;
         final int[] processedEvents = {0}, candidates = {0}, syncedEvents = {0}, robustCount = {0}, repeatableCount={0};
-        final String knownReference=(String)referenceSpinner.getSelectedItem();
+        // Reference label is captured by start() on UI thread.
         EventDetector detector = null;
         AudioClock clock = null;
         try {
