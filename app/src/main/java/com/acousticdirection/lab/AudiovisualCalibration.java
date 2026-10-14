@@ -144,6 +144,22 @@ public final class AudiovisualCalibration {
         return new Fit(sane,sane?"AJUSTE_PILOTO":"GANHO_OU_ERRO_INCOMPATIVEL",
             offset,gain,mae,n,span);
     }
+    public synchronized double meanAcceptedQuality(){
+        double total=0;int count=0;
+        for(Sample s:training){total+=s.quality;count++;}
+        for(Sample s:validation){total+=s.quality;count++;}
+        return count>0?total/count:Double.NaN;
+    }
+    public synchronized String exportPhase(String phase){
+        StringBuilder out=new StringBuilder();
+        out.append("phase,boottime_ns,known_projection,measured_delay_us,pair_quality_score\n");
+        if("TRAIN".equals(phase)){
+            for(Sample s:training)append(out,"TRAIN",s);
+        } else if("VALID".equals(phase)){
+            for(Sample s:validation)append(out,"VALID",s);
+        } else throw new IllegalArgumentException("phase");
+        return out.toString();
+    }
     public synchronized String exportRows(){
         StringBuilder out=new StringBuilder();
         out.append("phase,boottime_ns,known_projection,measured_delay_us,band_quality\n");

@@ -9,7 +9,8 @@
     <meta-data android:name="com.google.ar.core" android:value="optional" />
     <activity android:name=".ARCalibrationActivity"
         android:screenOrientation="landscape" android:exported="false" />
-    <activity android:name=".MainActivity" android:exported="true">
+    <activity android:name=".MainActivity" android:exported="false" />
+    <activity android:name=".LandingActivity" android:exported="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
         <category android:name="android.intent.category.LAUNCHER" />

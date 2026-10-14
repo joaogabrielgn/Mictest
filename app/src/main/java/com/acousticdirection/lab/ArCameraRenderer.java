@@ -38,6 +38,7 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
     }
     private final Listener listener;
     private final ArFrameBridge poseBridge;
+    private final FrameClockGate clockGate;
     private volatile Session session;
     private int texture=-1,program=-1,attrPos,attrUv,textureUniform;
     private int width=1,height=1;
@@ -52,11 +53,12 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
     private String mode="SEM_MARCA";
     private volatile long lastUi=0;
 
-    public ArCameraRenderer(ArFrameBridge bridge,Listener listener){
-        this.listener=listener;this.poseBridge=bridge;
+    public ArCameraRenderer(ArFrameBridge bridge,FrameClockGate clockGate,Listener listener){
+        this.listener=listener;this.poseBridge=bridge;this.clockGate=clockGate;
     }
     public void setSession(Session session){
         this.session=session;textureSet=false;changed=true;
+        previousQ=null;previousNs=0;clockGate.reset();poseBridge.clear();
     }
     public synchronized void markAt(float x,float y){tapX=x;tapY=y;}
     public synchronized void clearMark(){
@@ -161,17 +163,19 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
             }
             double[] q={sensorPose.qw(),sensorPose.qx(),sensorPose.qy(),sensorPose.qz()};
             double[] axis=WorldDirectionSolver.rotate(q,WorldDirectionSolver.microphoneAxisDevice());
-            long now=SystemClock.elapsedRealtimeNanos();
+            long processed=SystemClock.elapsedRealtimeNanos();
+            long exposure=frame.getTimestamp();
+            boolean compatible=clockGate.observe(exposure,processed);
             double speed=0;
             if(previousQ!=null&&previousNs>0){
-                double elapsed=(now-previousNs)/1e9;
+                double elapsed=(exposure-previousNs)/1e9;
                 if(elapsed>.004&&elapsed<.3)
                     speed=MotionEvidence.angleDegrees(previousQ,q)/elapsed;
             }
-            previousQ=q;previousNs=now;
-            poseBridge.append(ArFrameBridge.create(now,frame.getTimestamp(),axis,
-                sourceWorld,cameraPosition,q,sourceAnchor!=null,
-                trans,speed));
+            previousQ=q;previousNs=exposure;
+            if(compatible)poseBridge.append(ArFrameBridge.createWithTiming(
+                exposure,processed,axis,sourceWorld,cameraPosition,q,
+                sourceAnchor!=null,trans,speed));
             double[] position;
             if(sourceAnchor!=null&&sourceAnchor.getTrackingState()==TrackingState.TRACKING)
                 position=translation(sourceAnchor.getPose());
@@ -183,10 +187,12 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
             boolean visible=projected[2]>0 && projected[0]>=0 && projected[0]<=width &&
                 projected[1]>=0 && projected[1]<=height;
             showStatus((int)projected[0],(int)projected[1],visible,
-                "ARCore TRACKING",sourceAnchor!=null?
-                "Âncora visual acompanhada":
-                (trans>.15?"Direção apenas: mova sem transladar":
-                "Direção apenas: mantenha o centro do S25 parado"));
+                "ARCore TRACKING",!compatible?
+                "Relógio da câmera: "+clockGate.status() :
+                String.format(java.util.Locale.US,"Quadro %.0f ms | %s",
+                    clockGate.medianFrameAgeMs(),
+                    sourceAnchor!=null?"Âncora estável":
+                    trans>.15?"Mantenha o celular no mesmo lugar":"Direção marcada"));
         }catch(Exception e){
             showStatus(-1,-1,false,"Falha de frame ARCore",e.getClass().getSimpleName());
         }

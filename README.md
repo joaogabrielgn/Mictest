@@ -1,50 +1,63 @@
-# Acoustic Direction Lab v0.5 — Calibração audiovisual com ARCore
+# Acoustic Direction Lab v0.5.1 — calibração audiovisual guiada
 
-Projeto experimental Android, desenvolvido com Samsung Galaxy S25 (SM-S931B), Android 17, sem inteligência artificial. [Código-fonte do Mictest](https://github.com/joaogabrielgn/Mictest).
+Projeto experimental Android para o Galaxy S25 (SM-S931B). Desenvolvido em Java/Android, sem IA. O objetivo de longo prazo é localizar a fonte de som dominante (motor, chiado, voz, ruído contínuo) com dois microfones e rotação do celular. **O protótipo não fornece precisão espacial validada e não separa várias fontes simultâneas.**
 
-## O que chegou nesta versão
+## Instalação
 
-A versão 0.5 mantém todas as funções de v0.4.3 (captura estéreo contínua, GCC-PHAT, IMU e hipótese 3D) e acrescenta o novo botão **Abrir calibração com câmera + ARCore**.
+Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions), selecione a **última execução verde**, baixe `AcousticDirectionLab-APK`, extraia `app-debug.apk` e instale. Se a assinatura debug diferir da anterior, exporte seus dados antes de desinstalar. Autorize CAMERA e RECORD_AUDIO; atualize o Google Play Services para RA.
 
-A tela AR usa o **ARCore como proprietário exclusivo da câmera traseira** e mostra a imagem através de textura OpenGL ES; não tenta abrir CameraX ao mesmo tempo. Possui:
+## O que mudou desde a v0.5
 
-1. **Marcação por toque na própria imagem.** Toque no objeto que está emitindo som. Quando ARCore detecta plano/ponto/depth apropriado, usa uma `AR_ANCHOR` e atualiza a direção da câmera para a fonte, mesmo durante pequenas translações. Se não houver interseção AR confiável, usa `DIRECAO_APENAS`: a direção óptica marcada persiste no espaço durante **rotações**, mas movimentos laterais de mais de ~15 cm tornam a aproximação inválida. O ponto marcado não é uma localização acústica estimada.
-2. **Captação simultânea.** Microfone em `CAMCORDER`, `2 canais`, `48000 Hz`. Processa todo o fluxo de áudio, incluindo motores, ventiladores e chiados, em janelas de 4096 frames com avanço de 1024 frames, sem depender de estalos.
-3. **Pares audiovisuais.** Para cada medição selecionada, registra TDOA (µs), timestamp acústico `BOOTTIME`, ARCore `BOOTTIME` obtido após a atualização do quadro, diferença temporal entre as duas leituras, direção do eixo físico dos microfones via `Frame.getAndroidSensorPose()` e direção da fonte marcada no mundo. Somente utiliza pares próximos no tempo e captura lenta (<28°/s), sem clipping, com alguma coerência espectral. **Importante:** ARCore e AudioRecord não estão hardware-sincronizados; esta é uma aproximação por relógio monotônico, válida apenas como protótipo. O atraso de câmera desconhecido, diferenças de processamento e rastreamento degradado podem enviesar a calibração.
-4. **Calibrador paramétrico robusto**, sem rede neural: ajusta `delay_us = offset + gain * dot(axis_world, source_direction_world)`. Exige >=24 medidas espacialmente variadas, faixa de projeção >=0,55 e desvio médio/ganho fisicamente plausíveis. Não transforma diretamente o ponto marcado em localização do som.
-5. **Validação realmente posterior ao ajuste.** O botão `Calibrar / Validar` congela o modelo, passando a gravar medidas novas que nunca atualizam o perfil. A validação calcula MAE de TDOA no conjunto novo e compara com um modelo de atraso constante. Se o erro estiver elevado, o app avisa em vez de declarar sucesso.
-6. **Reconstrução 3D experimental com parâmetros calibrados.** Após congelar o modelo, a nova varredura utiliza `(delay-offset)/gain` e vários eixos dos microfones orientados no mundo (ARCore) para reconstruir uma direção. Essa reconstrução é independente da marcação visual durante a inferência; o marcador entra depois apenas para calcular o **erro angular observacional**. Se não houver cobertura tridimensional ou resíduos aceitáveis, a solução é recusada. Mesmo um erro pequeno não prova generalização para outra fonte ou ambiente.
-7. **Exportação de um ZIP pelo Android** contendo WAV da última captura, CSV acústico/AR por janela, `calibration_pairs.csv` com fases `TRAIN` e `VALID`, e `metadata.txt`. O usuário escolhe a pasta pelo seletor Android. Nenhum upload automático.
+### UI redesenhada
 
-## Como instalar no S25
+- Uma nova tela inicial limpa possui três cartões: **Calibração com câmera**, **Teste dos microfones** e **Arquivos e análises**. O antigo laboratório continua acessível como modo técnico.
+- A tela de AR prioriza **câmera em tela cheia**, marcador verde da fonte **escolhida manualmente**, barra de três passos, quatro métricas (pares, amplitude de projeção, qualidade, MAE) e um único botão contextual grande. Botões secundários Reiniciar e Exportar; estatísticas e timestamps ficam em **Detalhes técnicos** recolhível.
+- Estados inequívocos: `IDLE → SOURCE_MARKED → CALIBRATING → READY_TO_FREEZE → VALIDATING → DONE`. O botão nunca tenta congelar o perfil enquanto o áudio está ativo. A operação congela definitivamente o perfil. **VALID requer gravação subsequente e amostras com timestamp posterior ao congelamento.**
+- O fluxo recomenda: marcar a fonte, iniciar áudio, girar/inclinar devagar, parar, congelar, **iniciar nova validação**, parar, exportar.
 
-Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions), toque na última execução verde e baixe o artefato `AcousticDirectionLab-APK`. Extraia `app-debug.apk` e instale. Se houver conflito de assinatura, exporte dados antigos antes de desinstalar. Para a nova calibração, conceda as permissões de **câmera e microfone** e tenha **Google Play Services para RA** instalado e atualizado. ARCore é opcional na configuração do aplicativo, então os testes acústicos continuam disponíveis sem RA.
+### Correção da sincronização ARCore + áudio
 
-## Protocolo recomendado — primeira calibração real
+O principal erro de v0.5 era usar `elapsedRealtimeNanos()` depois de `Session.update()` como timestamp da pose AR. Essa chamada pode entregar imagens antigas por ~190 ms, o que gera erro angular com o S25 em rotação.
 
-1. Use um segundo celular ou pequeno alto-falante reproduzindo **ruído rosa ou branco** a aproximadamente **1–2 metros**, em volume moderado, num ambiente silencioso. Preferir fonte estática, com banda larga; evitar estalos metálicos muito tonais.
-2. Abra **Calibração com câmera + ARCore**. A tela entra no modo paisagem. Espere ARCore informar rastreamento e visualizar a fonte.
-3. Toque diretamente sobre o objeto que produz o som. O marcador deve permanecer projetado durante rotações (e pode ir para a borda da imagem). Se o app mostrar `DIRECAO_APENAS`, não desloque lateralmente o S25: gire em torno do próprio centro.
-4. Toque **Iniciar áudio**. Faça 15–25 s de varredura bem lenta: esquerda/direita, acima/abaixo e rotação do eixo longitudinal. Não obstrua nenhum microfone. O calibrador exige variedade angular e pode rejeitar movimentos muito rápidos, pois o descompasso vídeo/áudio ainda não foi corrigido.
-5. Quando tiver amostras suficientes e a indicação do calibrador for plausível, toque **Calibrar / Validar**. Isso congela os coeficientes do perfil. Não reinicie a fonte, não a mova e não modifique o volume.
-6. **Continue ou recomece a captura de áudio** e execute uma nova sequência de giros e inclinações. Somente essa nova parte é usada como `VALID` e para tentativa de reconstrução 3D. Quando houver observabilidade suficiente, o aplicativo apresenta a direção reconstruída e a diferença angular em relação ao ponto marcado.
-7. Pare a gravação, toque **Exportar ZIP**, escolha uma pasta do Android e compartilhe o arquivo aqui.
+- Agora a captura copia a pose ligada a **`Frame.getTimestamp()` (instante do quadro capturado)** e registra separadamente o instante da entrega. A documentação ARCore **não promete formalmente a base desse timestamp**. Uma `FrameClockGate` exige idades positivas e plausíveis de quadro (0–900 ms) e regularidade temporal antes de permitir pareamento com AudioTimestamp TIMEBASE_BOOTTIME. Essa checagem não prova sincronia de hardware; o CSV inclui informação para investigar diferença de relógios.
+- Uma fila de janelas acústicas aguarda por quadros AR posteriores ao instante do áudio; isso evita usar a pose antiga só porque a captura da câmera está atrasada. Uma `ArFrameBridge` interpoladora exige quadros de ambos os lados do instante acústico, intervalo máximo de 110 ms, até 70 ms para cada extremidade e nenhuma extrapolação silenciosa. Amostras sem bracketing são rejeitadas com motivo.
+- A ponte temporal interpola quaternion, eixo físico e direção marcada (se há âncora AR), e descarta tracking sem referência, movimento rápido e translação >15 cm no modo direção-apenas.
+- Persistem limitações: relógios não hardware-sincronizados, rolling shutter, offset do HAL Samsung, ARCore relocalização e posição da âncora visual diferente do alto-falante físico.
 
-### Como interpretar
+### Filtro acústico e calibração
 
-- `AJUSTE_PILOTO`: os coeficientes tiveram dispersão plausível nos próprios dados de calibração. Não equivale a acurácia.
-- `VALIDACAO_TDOA_OK`: um conjunto **novo** previu bem a medição de atraso quando comparado a um modelo de atraso constante. É validação limitada à mesma fonte e ambiente.
-- `DIRECAO_3D_EXPERIMENTAL`: o modelo geométrico conseguiu ajustar uma direção após diversas rotações. Não significa automaticamente que o erro real seja baixo.
-- `Erro angular vs referência`: diferença entre a direção 3D acústica e a fonte que o usuário marcou. Somente aparece com direção geométrica disponível.
-- `SEM_DIVERSIDADE_GEOMETRICA`, `COLETANDO_MEDIDAS`, `GANHO_OU_ERRO_INCOMPATIVEL`: não force resultado; observe a cobertura e a qualidade dos sinais.
+- Novo `PairQuality` calcula score diagnóstico [0–1] de coerência, força/unicidade dos picos GCC-PHAT, nível, saturação, intervalo de interpolação, rotação e estado visual. **O score não é probabilidade de localização correta**. Só pares acima do limiar e sem vetos entram no ajuste.
+- `AudiovisualCalibration` continua estimando `delay_us = offset + gain * dot(microphone_axis_world, marked_source_direction_world)` com mínimos quadrados robustos.
+- São necessárias >=24 amostras aceitas com projeções distribuídas por >=0,55. O ajuste exige ganho/offset plausíveis e MAE de treinamento <125 µs. O botão **Congelar calibração** só fica disponível após atender esses critérios, e apenas com gravação parada.
+- A fase VALID não altera o perfil; mede MAE do TDOA em uma nova trajetória, comparando com o modelo ingênuo de offset constante. O reconstrutor 3D recebe exclusivamente atrasos calibrados e quaternions. A direção marcada é consultada **depois**, para o erro angular observacional.
+- O erro angular é relativo à referência visual fornecida pelo usuário, não um padrão laboratorial independente. Solução 3D fica indisponível sem cobertura espacial e consistência suficientes.
 
-## Limitações que precisam ser resolvidas para produção
+### ZIP completo, incluindo todas as gravações
 
-1. **Sincronização câmera/áudio ainda aproximada:** ARCore entrega poses e frames processados; o timestamp BOOTTIME é tomado depois de `Session.update()`, enquanto AudioRecord usa hardware AudioTimestamp. Como fase de prova de conceito, rejeitamos poses distantes em tempo e movimentos rápidos. Para máxima precisão precisaremos medir o offset de câmera e áudio e sincronizar/reinterpolar as poses pela exposição real.
-2. **Calibração exclusiva do aparelho e rota de captura:** canais CAMCORDER são processados pela Samsung; rota, AGC, supressão de ruído, orientação e tipo de som podem afetar os atrasos.
-3. **Uma única fonte:** não existe ainda separação confiável de várias fontes simultâneas nem identificação da fonte mais alta por intensidade.
-4. **Bússola/orientação e AR relocalização:** mudanças de pose ARCore podem afetar a direção. Ponto com fallback direcional só vale aproximadamente em rotações sem translação.
-5. **Âncora por hit-test:** ARCore pode rastrear um plano próximo que não corresponde à superfície física exata do alto-falante; a posição precisa da fonte ainda é desconhecida.
-6. **Câmera posterior e geometria:** não há projeção acústica AR sem marcação, calibração de FOV personalizada, nem visualização de várias fontes no quadro. O marcador verde mostra a referência MANUAL, não o resultado inferido pelo microfone. A direção acústica calculada aparece numericamente apenas durante a validação.
+O ZIP exportado contém:
+- `train_audio_<data>.wav` e `train_windows_<data>.csv`.
+- `valid_audio_<data>.wav` e `valid_windows_<data>.csv`.
+- `train_pairs.csv` e `valid_pairs.csv` com projeção conhecida, atraso e qualidade de cada par.
+- `summary.json` com fase, offset, ganho, MAE de treino e validação, baseline, cobertura, qualidade média, erro angular 3D observacional e rota ativa dos microfones.
+- `metadata.txt` com limitações e bases de tempo.
 
-Testes automatizados validam ajustes de offset/ganho robustos, rejeição de calibrações degeneradas, validação independente, relógios de pose e geometria de projeção sintética. A primeira execução no S25 será o teste indispensável do ARCore e da concorrência da câmera com a gravação CAMCORDER.
+Se o usuário repetiu uma etapa, os segmentos anteriores também são mantidos no ZIP. A exportação é local por `ACTION_CREATE_DOCUMENT`, sem upload automático.
+
+## Primeiro teste sugerido
+
+1. Posicione um alto-falante ou outro celular com ruído rosa/branco a **1–2 metros**, imóvel, sem outra fonte alta próxima. Evite ambientes muito reverberantes.
+2. Entre na **Calibração com câmera**. Quando o ARCore estiver rastreando, toque no objeto emissor. Se ele apresentar `DIRECAO_APENAS`, gire o S25 mantendo seu centro aproximadamente parado; o modo `AR_ANCHOR` tolera pequenas translações, mas a posição da âncora pode não coincidir com o emissor acústico.
+3. Toque **Iniciar calibração**. Durante 20–40 s, faça giros lentos esquerda/direita, inclinações para cima/baixo e alguma rotação longitudinal. Movimentos acima de ~32°/s serão rejeitados. Os coeficientes devem estabilizar e a cobertura aumentar.
+4. Pare a gravação. Se aparecer **Pronto para congelar**, toque **Congelar calibração**. Se não, continue girando até gerar amostras válidas com direções diversas.
+5. Toque **Iniciar validação**, faça uma **nova varredura** com a fonte ainda parada, e pare o áudio. Agora o arquivo contém apenas pares VALID e o modelo não pode se reajustar.
+6. Toque **Exportar** e compartilhe o ZIP. Observe o status da validação, MAE em µs e eventual erro 3D em graus relativo ao marcador.
+
+## Critérios de aceite
+
+- Todos os estados transitam conforme testes, sem misturar TRAIN/VALID.
+- Frame capture timestamps podem ser comparados com Audio BOOTTIME dentro de limites verificáveis; o tempo `Session.update()` não é usado como se fosse instante de exposição.
+- Rejeições são explicáveis: CLOCK, TIME_INTERPOLATION, ACUSTIC_QUALITY, MOTION, TRACKING, etc.
+- Não declarar sucesso 3D com rotações planas, picos tonais ambíguos ou validação ausente.
+- A build passa por testes JVM, APK debug e revisão no Galaxy S25.
+
+O app continua um instrumento **experimental**, não um localizador de fontes simultâneas nem um sistema de medição angular certificado.
