@@ -39,7 +39,7 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title(root, "ACOUSTIC DIRECTION LAB", 21, 0xFF62E0C3);
-        title(root, "Sons contínuos + calibração / v0.4", 14, Color.LTGRAY);
+        title(root, "Bandas adaptativas + rastreio / v0.4.1", 14, Color.LTGRAY);
         modeSpinner=selector(root,"Modo de análise",
             new String[]{"SOM_CONTINUO","ESTALOS_CALIBRACAO"},0);
         sourceSpinner = selector(root, "Fonte", sourceNames, 2);
@@ -75,7 +75,9 @@ public class MainActivity extends Activity {
         log.setTextColor(Color.WHITE); log.setTextSize(12);
         log.setTypeface(Typeface.MONOSPACE); log.setTextIsSelectable(true);
         root.addView(log);
-        writeLog("Acoustic Direction Lab v0.4");
+        writeLog("Acoustic Direction Lab v0.4.1");
+        writeLog("Atrasos de banda única podem ser candidatos ou temporalmente estáveis.");
+        writeLog("TEMPORAL_ESTAVEL não mede acurácia angular nem resolve múltiplas fontes.");
         writeLog("SOM_CONTINUO: janelas 85 ms/hop 21 ms; GCC-PHAT multibanda.");
         writeLog("Não separa fontes; a banda dominante não garante a fonte mais alta.");
         writeLog("Perfil S25 PILOTO: microfone inferior -434,7 us, centro -2,8 us, superior +472,1 us.");
@@ -204,7 +206,7 @@ public class MainActivity extends Activity {
             final AudioClock audioClock = clock;
             final ContinuousTracker tracker=continuousMode && actualChannels>=2 ?
                 new ContinuousTracker(actualChannels,actualRate):null;
-            final int[] continuousCount={0},continuousReliable={0};
+            final int[] continuousCount={0},continuousReliable={0},continuousStable={0},continuousCandidates={0};
             final long[] lastContinuousUi={0};
             final DelayStability[] stability=new DelayStability[Math.max(0,actualChannels-1)];
             for(int i=0;i<stability.length;i++)stability[i]=new DelayStability();
@@ -236,8 +238,8 @@ public class MainActivity extends Activity {
             csvOut.write("onset_frame,window_start_frame,audio_boottime_ns,audio_time_status,anchor_frame,anchor_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,trigger_ratio,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,first_rise_C0_sample,first_rise_B_sample,first_rise_delay_us,first_rise_status,full_window_delay_us,early_full_delta_us,stable_neighbors,stable_median_us,stable_mad_us,robust_candidate,robust_reason,reference_label,axis_profile,empirical_axis_score,empirical_sector,exceeds_ideal_air_limit,ideal_air_excess_us,acoustic_repeatable,first_onset_agree\n");
             imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\n");
             if(continuousOutput!=null)continuousOutput.write(
-                "center_frame,audio_boottime_ns,audio_time_status,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,level_dbfs,level_diff_db,spectral_flatness,dominant_band,raw_delay_us,smoothed_delay_us,quality_status,reliable,valid_bands,agreeing_bands,empirical_axis_score,empirical_axis_sector,reference_label,low_delay_us,low_peak,low_contrast,low_reason,mid_delay_us,mid_peak,mid_contrast,mid_reason,high_delay_us,high_peak,high_contrast,high_reason\n");
-            if(continuousMode)writeLog("MODO CONTÍNUO: grave, médio e agudo, nenhuma detecção de estalo requerida.");
+                "center_frame,audio_boottime_ns,audio_time_status,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,level_dbfs,level_diff_db,spectral_flatness,dominant_band,raw_delay_us,smoothed_delay_us,quality_status,reliable,valid_bands,agreeing_bands,empirical_axis_score,empirical_axis_sector,reference_label,low_delay_us,low_peak,low_contrast,low_reason,mid_delay_us,mid_peak,mid_contrast,mid_reason,high_delay_us,high_peak,high_contrast,high_reason,adaptive_delay_us,adaptive_peak,adaptive_contrast,adaptive_reason,adaptive_low_hz,adaptive_high_hz,confidence_class,temporal_stable,temporal_neighbors,temporal_median_us,temporal_mad_us\n");
+            if(continuousMode)writeLog("MODO CONTÍNUO 0.4.1: três bandas fixas + banda adaptativa e histórico temporal.");
             writeLog("v0.3.2: dois níveis: qualidade de TDOA + repetibilidade em pose semelhante.");
             writeLog("Referência rotulada pelo usuário: "+knownReference);
             writeLog("Perfil 1D piloto: MIC_INFERIOR=-434,7; CENTRO=-2,8; MIC_SUPERIOR=+472,1 us.");
@@ -274,6 +276,8 @@ public class MainActivity extends Activity {
                 if(tracker!=null)tracker.feed(audio,n,window -> {
                     continuousCount[0]++;
                     if(window.reliable)continuousReliable[0]++;
+                    if(window.temporalStable&&!window.reliable)continuousStable[0]++;
+                    if(Double.isFinite(window.rawDelayUs))continuousCandidates[0]++;
                     AudioClock.Mapping mapped=audioClock.timeForFrame(window.centerFrame);
                     PoseHistory.Pose pose=mapped.valid?motion.poseAt(mapped.timeNs):motion.poseAt(-1);
                     EmpiricalAxis.Axis axis=Double.isFinite(window.rawDelayUs)?
@@ -291,6 +295,12 @@ public class MainActivity extends Activity {
                         for(ContinuousTracker.Band band:window.bands)
                             continuousOutput.write(String.format(Locale.US,",%.4f,%.4f,%.4f,%s",
                                 band.delayUs,band.peakRatio,band.contrast,band.reason));
+                        continuousOutput.write(String.format(Locale.US,
+                            ",%.2f,%.2f,%s,%d,%d,%.3f,%.3f",
+                            window.adaptiveLowHz,window.adaptiveHighHz,
+                            window.confidenceClass,window.temporalStable?1:0,
+                            window.temporalNeighbors,window.temporalMedianUs,
+                            window.temporalMadUs));
                         continuousOutput.newLine();
                     } catch(IOException e){throw new IllegalStateException("CSV contínuo: "+e.getMessage(),e);}
                     long uiTime=android.os.SystemClock.elapsedRealtimeNanos();
@@ -300,9 +310,11 @@ public class MainActivity extends Activity {
                         if(mapped.valid && pose.valid)
                             output.append(String.format(Locale.US,
                                 "\nIMU: yaw %+.1f | pitch %+.1f | roll %+.1f",pose.yaw,pose.pitch,pose.roll));
-                        if(window.reliable && axis!=null){
+                        if((window.reliable||window.temporalStable) && axis!=null){
                             output.append("\n").append(axis.display());
                             output.append("\nPERFIL PILOTO 1D; não é ângulo 3D.");
+                            if(window.temporalStable&&!window.reliable)
+                                output.append("\nApenas estabilidade temporal (não valida localização).");
                         }
                         final String currentView=output.toString();
                         runOnUiThread(()->live.setText(currentView));
@@ -392,7 +404,9 @@ public class MainActivity extends Activity {
                 }
             }
             if(continuousMode)writeLog("Janelas contínuas="+continuousCount[0]+
-                ", multibanda OK="+continuousReliable[0]+"; arquivo="+continuousFile.getName());
+                ", multibanda OK="+continuousReliable[0]+
+                ", estabilidade temporal somente="+continuousStable[0]+
+                ", atrasos candidatos="+continuousCandidates[0]+"; arquivo="+continuousFile.getName());
             writeLog("Gravados "+frames+" frames; "+wavFile.getName());
             writeLog("Estalos detectados="+detector.detectedCount()+", analisados="
                 +processedEvents[0]+", descartados por fila="+detector.overflowCount()

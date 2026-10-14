@@ -67,6 +67,24 @@ public class ContinuousTrackerTest {
         for(ContinuousTracker.Window part:w)if(part.reliable)reliable++;
         assertEquals(0,reliable);
     }
+    @Test public void adaptiveBandIsNotIndependentSecondVote(){
+        List<ContinuousTracker.Window> w=capture(syntheticStereo(48000,6,false));
+        for(ContinuousTracker.Window part:w){
+            assertEquals(4,part.bands.length);
+            assertTrue(part.adaptiveHighHz>part.adaptiveLowHz);
+            if(part.reliable)assertTrue(part.agreeingBands>=2);
+            if(part.temporalStable&&!part.reliable)
+                assertEquals("TEMPORAL_APENAS",part.confidenceClass);
+        }
+    }
+    @Test public void cleanNoiseDoesNotProduceImpossibleFloatingValues(){
+        List<ContinuousTracker.Window> w=capture(syntheticStereo(36000,15,false));
+        for(ContinuousTracker.Window part:w){
+            assertFalse(Double.isInfinite(part.levelDb));
+            if(part.reliable||part.temporalStable)
+                assertTrue(Double.isFinite(part.smoothedDelayUs));
+        }
+    }
     @Test public void callbacksIncludeFrameCenteredTimestamps(){
         List<ContinuousTracker.Window> w=capture(syntheticStereo(16000,4,false));
         assertEquals(ContinuousTracker.WINDOW/2,w.get(0).centerFrame);

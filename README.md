@@ -1,44 +1,34 @@
-# Acoustic Direction Lab v0.4 — Rastreamento de som contínuo sem IA
+# Acoustic Direction Lab v0.4.1 — análise contínua com evidência graduada
 
-Aplicativo experimental no GitHub [joaogabrielgn/Mictest](https://github.com/joaogabrielgn/Mictest). Foco: começar a analisar sons persistentes de motores, ventiladores, chiados, pessoas falando e ruídos ambientais, **não somente estalos**.
+Repositório: [joaogabrielgn/Mictest](https://github.com/joaogabrielgn/Mictest). Android; protótipo experimental para o Galaxy S25 (SM-S931B). **Sem IA**.
 
-## Instalar APK pelo S25
+## Objetivo
 
-Abra [Actions do Mictest](https://github.com/joaogabrielgn/Mictest/actions), entre no último build verde, baixe `AcousticDirectionLab-APK`, extraia `app-debug.apk` do ZIP e instale no telefone. Faça cópia/exportação dos CSV/WAV antigos antes de desinstalar alguma versão: o debug APK pode ter assinatura diferente entre compilações do GitHub.
+Detectar atrasos intercanal de sons contínuos, como motores, chiados, ventiladores e voz, inclusive quando a energia se concentra em uma só faixa. Não precisa de estalos fora do modo de calibração. A v0.4 anterior produziu **0 MULTIBANDA_OK entre 4088 janelas** nas quatro gravações reais; os sinais tinham maior parte da energia em graves, com picos ambíguos nesse intervalo.
 
-## Modos
+### Melhorias
 
-### SOM_CONTINUO (novo; selecionado por padrão)
+- Mantém três bandas fixas do GCC-PHAT (180–950, 950–3000, 3000–8500 Hz) em janelas Hann de 4096 frames e avanço de 1024 frames a 48 kHz (85,3 ms e 21,3 ms).
+- Adiciona uma **quarta banda adaptativa** entre 250 e 8500 Hz, escolhida dinamicamente a partir da distribuição espectral com suporte mínimo de 1300 Hz. Ela pode fornecer um atraso candidato em cenas nas quais as bandas fixas não passam no filtro. **É uma estimativa sobreposta às bandas fixas e não é contada como evidência independente.**
+- Ajusta limiares de pico/contraste para bandas estreitas e mantém estados explícitos de rejeição (`SILENCIO`, `CLIPPING`, `PICO_AMBIGUO`, `TONAL_AMBIGUO`, `SEM_PICO_CONFIAVEL`).
+- Acrescenta o histórico `TemporalEvidence` para selecionar medições repetidas na região temporal de 4 segundos, exigindo pelo menos 12 janelas com atrasos próximos, 0,65 s transcorrido e dispersão robusta MAD <=25 µs. Como janelas se sobrepõem, **essas medições não são observações independentes**. Um som estável ou eco também pode ser sistematicamente errado.
+- Mostra níveis distintos: `CANDIDATO_UNICA_BANDA`, `TEMPORAL_ESTAVEL_BANDA_UNICA` (confiança temporal **parcial**) e `MULTIBANDA_OK` (duas faixas fixas com atrasos concordantes). Nenhum desses níveis significa confirmação de direção real, azimute, elevação ou precisão angular.
+- Exibe suavização somente com evidência multibanda ou temporalmente estável; não mantém seta/posição antiga em silêncio ou ambiguidade.
+- Exporta CSV com as quatro bandas, as fronteiras da banda adaptativa, status e métricas de suporte temporal.
+- Mantém modo `ESTALOS_CALIBRACAO`, WAV e CSV dos eventos, IMU e AudioTimestamp da v0.4.
 
-- Microfone padrão: `CAMCORDER`, 2 canais, 48000 Hz.
-- Processamento em fluxo de **janelas sobrepostas de 4096 frames** (85,3 ms @48 kHz) a cada **1024 frames** (21,3 ms).
-- GCC-PHAT independente em três bandas: **GRAVE 180–950 Hz**, **MÉDIO 950–3000 Hz**, **AGUDO 3000–8500 Hz**. A janela tem *Hann* para reduzir vazamento espectral. A banda dominante é a de maior energia analisada, **não é uma fonte sonora individual identificada**.
-- Rejeita ruído fraco, clipping, borda de busca e picos espectrais ambíguos. Em seguida requer **concordância de atraso em ao menos duas bandas** dentro de 105 µs, evitando interpretar um único pico de som tonal como direção precisa. Indica `MULTIBANDA_OK`, `SILENCIO`, `TONAL_AMBIGUO`, `FAIXA_UNICA_OU_DIVERGENTE` etc.
-- Calcula atraso bruto e um valor suavizado pela mediana móvel + EMA, **apenas enquanto existem novas janelas confiáveis**. Com silêncio ou ambiguidade, marca o atraso apresentado como indeterminado, sem manter uma seta enganosa.
-- Confronta o atraso com o perfil-piloto 1D de dois microfones do S25: inferior ~−434,7 µs, centro ~−2,8 µs, superior ~+472,1 µs. A informação é **somente um índice relativo entre extremidades físicas**, não uma direção 3D.
-- Inclui a orientação interpolada do IMU (yaw, pitch e roll ao tempo estimado do centro da janela), para futura fusão com geometria calibrada. **Não calcula ainda azimute, elevação, erro angular, 3D, distância ou projeção pela câmera.**
-- Tempo máximo por captura: **120 segundos**, ou encerre antes com **Parar**. O WAV original, os dados brutos IMU e as janelas de análise são salvos localmente; nenhum upload automático.
-- Exporte WAV, IMU CSV e o novo **Exportar contínuo CSV**, contendo carimbo temporal acústico do centro da janela, quaternion/pose, banda dominante, energia, flatness espectral, atrasos de todas as bandas, status e índice-piloto.
+### Como instalar pelo celular
 
-### ESTALOS_CALIBRACAO (modo anterior)
+Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions), entre no último run verde, baixe o artefato `AcousticDirectionLab-APK`, extraia `app-debug.apk` e instale. Se a assinatura debug impedir atualização, **exporte seus arquivos antigos** antes de desinstalar a versão anterior. Isso pode apagar os registros locais do app.
 
-Retém a detecção de impulsos da v0.3.2, o CSV `analysis_*`, os filtros de qualidade e a marcação opcional da referência `MIC_INFERIOR`, `MIC_SUPERIOR`, `CENTRO` e `VARREDURA_FONTE_FIXA`. Máximo 30 segundos.
+### Como testar
 
-## Limitações importantes
+Selecione `SOM_CONTINUO`, `CAMCORDER`, `2 canais`, `48000 Hz`. Celular na horizontal. O campo de referência `MIC_INFERIOR` ou `MIC_SUPERIOR` refere-se à extremidade física do aparelho (não a esquerda ou direita, que mudam ao rotacionar). Faça um teste em cada extremidade com um mesmo ventilador ou emissor de ruído contínuo, a 50–100 cm, por 20–30 segundos. Faça um terceiro no ponto médio, a cerca de 50 cm, e uma varredura com fonte imóvel por 30–40 segundos. Mantenha volume moderado sem clipping. Exporte `WAV + continuous CSV` por gravação e `IMU CSV` da varredura.
 
-O Galaxy S25 declara para CAMCORDER os microfones como `C0:PROCESSED`. O Android pode variar processamento e atraso relativo. Uma **única linha de base de dois microfones não determina azimute e elevação** independentemente; a ambiguidade 3D permanece. Rotação e IMU foram registrados, mas não resolvem essa ambiguidade automaticamente; o ajuste geométrico dependerá de mais referências e validação fora da amostra.
+Compare a percentagem de janelas com atraso candidato, temporalmente estável e multibanda e, principalmente, os atrasos médios **em dados novos**. Apenas depois dessa validação devemos introduzir modelo geométrico 3D ou indicador sobre a câmera.
 
-**A fonte mais alta não é necessariamente a que aparece na banda mais energética.** Quando há várias fontes superpostas, a versão 0.4 não as separa nem consegue provar qual é predominante. Também não é uma câmera acústica pronta, nem visualiza a direção no visor.
+### Limites conhecidos
 
-## Como testar o novo modo
+Os canais `CAMCORDER` do Galaxy S25 aparecem no Android como **processados**, com mapeamento físico dos canais não comprovado. Sons monocromáticos podem ser temporalmente estáveis e ainda ter atraso errado. Se houver vários sons simultâneos, o algoritmo não separa fontes nem garante localizar a mais alta. O modo contínuo é um estimador de atraso por janela, não uma câmera acústica ou DOA 3D validado.
 
-Use `SOM_CONTINUO`, `CAMCORDER`, 2 canais, 48000 Hz. S25 na horizontal e parado, sem obstruir microfones. Com outro celular ou alto-falante a 0,5–2 m:
-1. Reproduza **ruído branco ou rosa** por 10–20 segundos, primeiro próximo à extremidade física inferior, depois à superior e por fim ao centro. Faça gravações separadas, com referência no seletor.
-2. Repita com um **ventilador/motor ou chiado contínuo**. Pode haver somente uma banda válida, e o app deve sinalizar baixa confiança.
-3. Faça uma **varredura** de 20–40 segundos com som contínuo fixo, movendo lentamente apenas o S25. Exporte WAV, CSV contínuo e IMU.
-
-A v0.4 pode revelar que sons periódicos/estreitos são intrinsecamente mais ambíguos. **Não force um número quando o status não for MULTIBANDA_OK.** Em seguida avaliaremos se a relação entre movimento e atraso consegue generalizar antes de desenvolver qualquer overlay de câmera.
-
-## Desenvolvimento
-
-O código da análise contínua fica em `ContinuousTracker.java` e dispõe de testes JVM sintéticos com som de banda larga atrasado, tom estreito, silêncio, sinais positivo/negativo e alinhamento de janela. CI executa testes e gera APK debug.
+O máximo de captura contínua é 120 segundos; modo de estalos, 30 segundos. Os sinais são salvos localmente, sem upload automático.

@@ -15,11 +15,12 @@ import java.util.Locale;
  */
 public final class ContinuousTracker {
     public static final int WINDOW=4096, HOP=1024;
-    private static final String[] NAMES={"GRAVE","MEDIO","AGUDO"};
+    private static final String[] NAMES={"GRAVE","MEDIO","AGUDO","ADAPTATIVA"};
     private static final double[][] BANDS={{180,950},{950,3000},{3000,8500}};
     private final int rate,channels,ringSize;
     private final short[] ring;
     private final ArrayDeque<Double> history=new ArrayDeque<>();
+    private final TemporalEvidence temporal;
     private long frames=0,lastWindowFrame=-1;
     private double smooth=Double.NaN;
     private long lastGoodFrame=-1;
@@ -41,21 +42,29 @@ public final class ContinuousTracker {
         public final long centerFrame;
         public final double levelDb,levelDifferenceDb,flatness,rawDelayUs,smoothedDelayUs;
         public final int agreeingBands,validBands;
-        public final boolean reliable,clipped;
+        public final boolean reliable,clipped,temporalStable;
+        public final int temporalNeighbors;
+        public final double temporalMedianUs,temporalMadUs,adaptiveLowHz,adaptiveHighHz;
+        public final String confidenceClass;
         public final String status,dominantBand;
         public final Band[] bands;
         Window(long center,double db,double diff,double flatness,double raw,double smooth,
                int agree,int valid,boolean reliable,boolean clipped,String status,
-               String dominant,Band[] bands){
+               String dominant,Band[] bands,TemporalEvidence.Result evidence,double adaptiveLow,double adaptiveHigh){
             centerFrame=center;levelDb=db;levelDifferenceDb=diff;this.flatness=flatness;
             rawDelayUs=raw;smoothedDelayUs=smooth;agreeingBands=agree;
             validBands=valid;this.reliable=reliable;this.clipped=clipped;
             this.status=status;dominantBand=dominant;this.bands=bands;
+            temporalStable=evidence.stable;temporalNeighbors=evidence.matched;
+            temporalMedianUs=evidence.medianUs;temporalMadUs=evidence.madUs;
+            adaptiveLowHz=adaptiveLow;adaptiveHighHz=adaptiveHigh;
+            confidenceClass=reliable?"MULTIBANDA":temporalStable?"TEMPORAL_APENAS":
+                Double.isFinite(raw)?"CANDIDATO":"INDETERMINADO";
         }
         public String summary(){
             return String.format(Locale.US,
-                "SOM CONTÍNUO | %s | banda %s\nnível %.1f dBFS | dL %+.1f dB | flatness %.3f\nTDOA %s | suavizado %s | bandas %d/%d",
-                status,dominantBand,levelDb,levelDifferenceDb,flatness,
+                "SOM CONTÍNUO | %s (%s) | banda %s\nnível %.1f dBFS | dL %+.1f dB | flatness %.3f\nTDOA %s | suavizado %s | bandas %d/%d",
+                status,confidenceClass,dominantBand,levelDb,levelDifferenceDb,flatness,
                 Double.isFinite(rawDelayUs)?String.format(Locale.US,"%+.1f us",rawDelayUs):"indeterminado",
                 Double.isFinite(smoothedDelayUs)?String.format(Locale.US,"%+.1f us",smoothedDelayUs):"indeterminado",
                 agreeingBands,validBands);
@@ -65,6 +74,7 @@ public final class ContinuousTracker {
         if(channels<2||channels>4||sampleRate<8000)throw new IllegalArgumentException("Need >=2 channels");
         this.channels=channels;rate=sampleRate;ringSize=WINDOW;
         ring=new short[ringSize*channels];
+        temporal=new TemporalEvidence(rate);
     }
     public void feed(short[] samples,int count,Listener callback){
         if(count<0||count>samples.length||count%channels!=0)throw new IllegalArgumentException("Invalid PCM");
@@ -111,7 +121,7 @@ public final class ContinuousTracker {
         double bandPowerSum=0;
         double logSum=0,arithSum=0;
         int flatBins=0;
-        double[] bandPower=new double[BANDS.length];
+        double[] bandPower=new double[BANDS.length+1];
         for(int k=1;k<=WINDOW/2;k++){
             double hz=k*(double)rate/WINDOW;
             double e=xr[k]*xr[k]+xi[k]*xi[k]+yr[k]*yr[k]+yi[k]*yi[k];
@@ -122,19 +132,24 @@ public final class ContinuousTracker {
             for(int b=0;b<BANDS.length;b++)
                 if(hz>=BANDS[b][0]&&hz<BANDS[b][1]){bandPower[b]+=e;bandPowerSum+=e;break;}
         }
+        double[] adaptiveHz=computeAdaptiveBounds(rate,spectrum);
+        for(int k=1;k<=WINDOW/2;k++){
+            double hz=k*(double)rate/WINDOW;
+            if(hz>=adaptiveHz[0]&&hz<adaptiveHz[1])bandPower[BANDS.length]+=spectrum[k];
+        }
         double flatness=flatBins>0?
             Math.exp(logSum/flatBins)/Math.max(arithSum/flatBins,1e-20):0;
         // At least a weak audio signal is needed to interpret any direction.
         boolean quiet=levelDb < -54.0;
         int maxLag=Math.min(90,(int)Math.ceil(rate*.1426/343.0)+
             Math.max(8,(int)Math.ceil(rate*.00042)));
-        Band[] estimates=new Band[BANDS.length];
+        Band[] estimates=new Band[BANDS.length+1];
         int dominant=0;
         for(int b=1;b<BANDS.length;b++) if(bandPower[b]>bandPower[dominant]) dominant=b;
         ArrayList<Double> candidates=new ArrayList<>();
         ArrayList<Double> weights=new ArrayList<>();
         int validCount=0;
-        for(int b=0;b<BANDS.length;b++){
+        for(int b=0;b<estimates.length;b++){
             String name=NAMES[b];
             double fraction=bandPower[b]/Math.max(bandPowerSum,1e-20);
             double bandDb=10*Math.log10(Math.max(bandPower[b],1e-20));
@@ -146,7 +161,9 @@ public final class ContinuousTracker {
             double[] re=new double[WINDOW],im=new double[WINDOW];
             for(int k=1;k<WINDOW;k++){
                 double hz=Math.min(k,WINDOW-k)*(double)rate/WINDOW;
-                if(hz<BANDS[b][0]||hz>=BANDS[b][1])continue;
+                double lower=b==BANDS.length?adaptiveHz[0]:BANDS[b][0];
+                double upper=b==BANDS.length?adaptiveHz[1]:BANDS[b][1];
+                if(hz<lower||hz>=upper)continue;
                 double rr=xr[k]*yr[k]+xi[k]*yi[k];
                 double ii=xi[k]*yr[k]-xr[k]*yi[k];
                 double amp=Math.hypot(rr,ii);
@@ -177,47 +194,81 @@ public final class ContinuousTracker {
             String reason="OK";
             if(clipDetected)reason="CLIPPING";
             else if(Math.abs(lag)==maxLag)reason="BORDA_BUSCA";
-            else if(peakRatio<2.7||contrast<.065)reason="PICO_AMBIGUO";
+            else if(peakRatio<(b==BANDS.length?2.4:2.05)||
+                    contrast<(b==BANDS.length?.055:.045))reason="PICO_AMBIGUO";
             boolean valid=reason.equals("OK");
             estimates[b]=new Band(name,delay,bandDb,peakRatio,contrast,valid,reason);
-            if(valid){validCount++;candidates.add(delay);weights.add(
+            if(valid && b<BANDS.length){validCount++;candidates.add(delay);weights.add(
                 fraction*Math.max(1.0,Math.min(8,peakRatio)));}
         }
         double raw=Double.NaN;
         int agreeing=0;
         String status;
         boolean reliable=false;
-        if(quiet) status="SILENCIO";
-        else if(clipDetected) status="CLIPPING";
-        else if(validCount==0)status="SEM_PICO_CONFIAVEL";
+        boolean tonal=flatness<.0015;
+        if(quiet)status="SILENCIO";
+        else if(clipDetected)status="CLIPPING";
         else {
-            // A two-band consensus is evidence of one dominant delay, not proof
-            // of source separation. Select inlier cluster without averaging opposite DOAs.
             double bestWeight=-1;
             for(int i=0;i<candidates.size();i++){
                 double wsum=0,dsum=0;
-                int close=0;
+                int count=0;
                 for(int j=0;j<candidates.size();j++){
                     if(Math.abs(candidates.get(i)-candidates.get(j))<=105){
                         wsum+=weights.get(j);
                         dsum+=weights.get(j)*candidates.get(j);
-                        close++;
+                        count++;
                     }
                 }
-                if((close>agreeing)||(close==agreeing && wsum>bestWeight)){
-                    agreeing=close;bestWeight=wsum;raw=dsum/wsum;
+                if(count>agreeing||(count==agreeing&&wsum>bestWeight)){
+                    agreeing=count;bestWeight=wsum;raw=dsum/wsum;
                 }
             }
-            if(agreeing<2)status="FAIXA_UNICA_OU_DIVERGENTE";
-            else if(flatness<.025)status="TONAL_AMBIGUO";
-            else {
-                status="MULTIBANDA_OK";
-                reliable=true;
-            }
+            // Adaptive overlaps fixed bands: it never counts as a second
+            // independent measurement for MULTIBANDA_OK.
+            Band adaptive=estimates[BANDS.length];
+            if(!Double.isFinite(raw)&&adaptive.valid)raw=adaptive.delayUs;
+            if(!Double.isFinite(raw))status="SEM_PICO_CONFIAVEL";
+            else if(tonal)status="TONAL_AMBIGUO";
+            else if(agreeing>=2){status="MULTIBANDA_OK";reliable=true;}
+            else status="CANDIDATO_UNICA_BANDA";
         }
-        double smoothed=updateSmoother(raw,reliable);
+        TemporalEvidence.Result evidence=temporal.observe(frames-WINDOW/2,
+            raw,Double.isFinite(raw)&&!quiet&&!clipDetected,tonal);
+        if(!reliable&&evidence.stable&&Double.isFinite(raw))
+            status="TEMPORAL_ESTAVEL_BANDA_UNICA";
+        double smoothed=updateSmoother(raw,reliable||evidence.stable);
         return new Window(frames-WINDOW/2,levelDb,diffDb,flatness,raw,smoothed,
-            agreeing,validCount,reliable,clipDetected,status,NAMES[dominant],estimates);
+            agreeing,validCount,reliable,clipDetected,status,NAMES[dominant],
+            estimates,evidence,adaptiveHz[0],adaptiveHz[1]);
+    }
+    /**
+     * Adaptive band from spectral support. Soft sqrt weights stop a single
+     * narrow harmonic from completely setting its limits; width >=1300 Hz.
+     * This band is not independent of the three fixed subbands.
+     */
+    private static double[] computeAdaptiveBounds(int sampleRate,double[] power){
+        double maxHz=Math.min(8500,sampleRate*.45);
+        int lo=(int)Math.ceil(250.0*WINDOW/sampleRate);
+        int hi=Math.min(power.length-1,(int)Math.floor(maxHz*WINDOW/sampleRate));
+        double total=0;
+        for(int k=lo;k<=hi;k++)total+=Math.sqrt(Math.max(0,power[k]));
+        if(total<1e-12)return new double[]{450,Math.min(maxHz,2500)};
+        double cumulative=0,low=350,high=2500;
+        boolean gotLow=false;
+        for(int k=lo;k<=hi;k++){
+            cumulative+=Math.sqrt(Math.max(0,power[k]));
+            if(!gotLow&&cumulative>=total*.12){low=k*(double)sampleRate/WINDOW;gotLow=true;}
+            if(cumulative>=total*.92){high=k*(double)sampleRate/WINDOW;break;}
+        }
+        double center=.5*(low+high);
+        low=Math.max(250,Math.min(low,center-650));
+        high=Math.min(maxHz,Math.max(high,center+650));
+        if(high-low<1300){
+            low=Math.max(250,center-650);
+            high=Math.min(maxHz,center+650);
+        }
+        return new double[]{low,high};
     }
     private double updateSmoother(double raw,boolean reliable){
         if(!reliable||!Double.isFinite(raw)){
