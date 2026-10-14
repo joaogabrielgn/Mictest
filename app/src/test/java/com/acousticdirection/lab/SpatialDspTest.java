@@ -55,12 +55,26 @@ public class SpatialDspTest {
         assertFalse(result.valid);
         assertEquals("CLIPPING",result.reason);
     }
-    @Test public void excessiveDelayIsNotAcceptedEvenWithinFftSearch() {
+    @Test public void processedChannelDelayBeyondIdealAirLimitRemainsDiagnostic() {
         double[] a=randomNoise(42),b=delayed(a,24);
         SpatialDsp.Estimate result=SpatialDsp.estimatePair(a,b,rms(a),rms(b),
-            0,1,48000,26);
-        assertFalse(result.valid);
-        assertEquals("FORA_LIMITE_FISICO",result.reason);
+            0,1,48000,42);
+        assertEquals(24.0,result.delaySamples,0.6);
+        assertTrue("Physical warning must be independent from correlation quality",
+            result.beyondIdealAirLimit);
+        assertTrue(result.idealAirExcessUs>0);
+        assertNotEquals("FORA_LIMITE_FISICO",result.reason);
+    }
+    @Test public void oppositeProcessedDelaysHaveCorrectSigns() {
+        double[] a=randomNoise(51), pos=delayed(a,23), neg=delayed(a,-21);
+        SpatialDsp.Estimate positive=SpatialDsp.estimatePair(
+            a,pos,rms(a),rms(pos),0,1,48000,42);
+        SpatialDsp.Estimate negative=SpatialDsp.estimatePair(
+            a,neg,rms(a),rms(neg),0,1,48000,42);
+        assertEquals(23.0,positive.delaySamples,0.6);
+        assertEquals(-21.0,negative.delaySamples,0.6);
+        assertTrue(positive.beyondIdealAirLimit);
+        assertTrue(negative.beyondIdealAirLimit);
     }
     @Test public void clippingIsRejected() {
         double[] a=randomNoise(34),b=delayed(a,4);

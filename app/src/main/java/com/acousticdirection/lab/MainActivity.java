@@ -18,7 +18,7 @@ public class MainActivity extends Activity {
     private final int[] sourceTypes = {MediaRecorder.AudioSource.UNPROCESSED, MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.CAMCORDER, MediaRecorder.AudioSource.VOICE_RECOGNITION};
     private final int[] rates = {48000, 96000, 44100};
     private final StringBuilder report = new StringBuilder();
-    private Spinner sourceSpinner, channelSpinner, rateSpinner;
+    private Spinner sourceSpinner, channelSpinner, rateSpinner, referenceSpinner;
     private Button startButton, stopButton;
     private TextView live, log;
     private AudioManager manager;
@@ -39,10 +39,12 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title(root, "ACOUSTIC DIRECTION LAB", 21, 0xFF62E0C3);
-        title(root, "Eventos robustos + IMU / v0.3.1", 14, Color.LTGRAY);
+        title(root, "Eixo empírico + IMU / v0.3.2", 14, Color.LTGRAY);
         sourceSpinner = selector(root, "Fonte", sourceNames, 2);
         channelSpinner = selector(root, "Número de canais", new String[]{"1 canal", "2 canais", "3 canais", "4 canais"}, 1);
         rateSpinner = selector(root, "Frequência", new String[]{"48000 Hz", "96000 Hz", "44100 Hz"}, 0);
+        referenceSpinner=selector(root,"Posição de referência (opcional)",
+            new String[]{"NÃO_ROTULADA","MIC_INFERIOR","MIC_SUPERIOR","CENTRO","VARREDURA_FONTE_FIXA"},0);
         LinearLayout controls = row(root);
         startButton = button(controls, "Iniciar", 0xFF00796B, () -> start());
         stopButton = button(controls, "Parar", 0xFF984348, () -> {running = false; stopButton.setEnabled(false);});
@@ -69,7 +71,9 @@ public class MainActivity extends Activity {
         log.setTextColor(Color.WHITE); log.setTextSize(12);
         log.setTypeface(Typeface.MONOSPACE); log.setTextIsSelectable(true);
         root.addView(log);
-        writeLog("Acoustic Direction Lab v0.3.1");
+        writeLog("Acoustic Direction Lab v0.3.2");
+        writeLog("Perfil S25 PILOTO: microfone inferior -434,7 us, centro -2,8 us, superior +472,1 us.");
+        writeLog("Índice 1D não é ângulo nem localização validada.");
         writeLog("Eventos analisados individualmente; timestamp audio BOOTTIME; pose IMU interpolada.");
         writeLog("Leituras de GCC-PHAT são hipóteses, não direções calibradas.");
         writeLog(motion.inventory());
@@ -166,7 +170,8 @@ public class MainActivity extends Activity {
         WavWriter wav = null;
         BufferedWriter csvOut = null, imuOut = null;
         long frames = 0;
-        final int[] processedEvents = {0}, candidates = {0}, syncedEvents = {0}, robustCount = {0};
+        final int[] processedEvents = {0}, candidates = {0}, syncedEvents = {0}, robustCount = {0}, repeatableCount={0};
+        final String knownReference=(String)referenceSpinner.getSelectedItem();
         EventDetector detector = null;
         AudioClock clock = null;
         try {
@@ -210,9 +215,11 @@ public class MainActivity extends Activity {
             lastWav=wavFile;lastCsv=csvFile;lastImu=imuFile;
             final BufferedWriter eventOutput=csvOut;
             final BufferedWriter motionOutput=imuOut;
-            csvOut.write("onset_frame,window_start_frame,audio_boottime_ns,audio_time_status,anchor_frame,anchor_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,trigger_ratio,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,first_rise_C0_sample,first_rise_B_sample,first_rise_delay_us,first_rise_status,full_window_delay_us,early_full_delta_us,stable_neighbors,stable_median_us,stable_mad_us,robust_candidate,robust_reason\n");
+            csvOut.write("onset_frame,window_start_frame,audio_boottime_ns,audio_time_status,anchor_frame,anchor_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,trigger_ratio,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,first_rise_C0_sample,first_rise_B_sample,first_rise_delay_us,first_rise_status,full_window_delay_us,early_full_delta_us,stable_neighbors,stable_median_us,stable_mad_us,robust_candidate,robust_reason,reference_label,axis_profile,empirical_axis_score,empirical_sector,exceeds_ideal_air_limit,ideal_air_excess_us,acoustic_repeatable,first_onset_agree\n");
             imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\n");
-            writeLog("v0.3.1: bloqueio de ecos, início acústico e estabilidade por orientação.");
+            writeLog("v0.3.2: dois níveis: qualidade de TDOA + repetibilidade em pose semelhante.");
+            writeLog("Referência rotulada pelo usuário: "+knownReference);
+            writeLog("Perfil 1D piloto: MIC_INFERIOR=-434,7; CENTRO=-2,8; MIC_SUPERIOR=+472,1 us.");
             writeLog("QUALIFICADO = filtros heurísticos; NÃO equivale a direção correta.");
             writeLog("Atraso positivo: C1 chega depois de C0; não há azimute calibrado.");
             ar.startRecording();
@@ -262,24 +269,25 @@ public class MainActivity extends Activity {
                             event.pcm,actualChannels,est.channel,actualRate);
                         double windowDelta=Math.abs(est.delayUs-all.delayUs);
                         boolean windowAgree=Double.isFinite(windowDelta) && windowDelta<=125.0;
+                        // First-rise is a SECONDARY OBSERVATION, not a veto:
+                        // threshold crossings differ across processed Android channels.
                         boolean firstAgree=first.usable() &&
                             Math.abs(first.delayUs-est.delayUs)<=150.0;
-                        boolean clean=est.valid && all.clippingFraction==0 &&
-                            windowAgree && firstAgree && mapping.valid && pose.valid;
+                        boolean acousticallyClean=est.valid && windowAgree;
                         DelayStability.Stats st=stability[k].observe(
-                            mapping.valid?mapping.timeNs:-1,pose,est.delayUs,clean);
-                        boolean robust=clean && !st.outlier;
+                            mapping.valid?mapping.timeNs:-1,pose,est.delayUs,acousticallyClean);
+                        boolean qualified=acousticallyClean && !st.outlier;
+                        boolean repeated=qualified && st.count>=3 &&
+                            Double.isFinite(st.madUs) && st.madUs<=35.0 &&
+                            Math.abs(est.delayUs-st.medianUs)<=Math.max(35.0,4.0*1.4826*st.madUs);
+                        EmpiricalAxis.Axis axis=EmpiricalAxis.estimate(est.delayUs);
                         String robustReason;
                         if(!est.valid)robustReason=est.reason;
-                        else if(all.clippingFraction>0)robustReason="CLIPPING";
                         else if(!windowAgree)robustReason="JANELAS_DIVERGEM";
-                        else if(!first.usable())robustReason=first.quality;
-                        else if(!firstAgree)robustReason="INICIO_DIVERGE";
-                        else if(!mapping.valid)robustReason="SEM_TIMESTAMP";
-                        else if(!pose.valid)robustReason=pose.quality;
                         else if(st.outlier)robustReason="DISPERSAO_ELEVADA";
-                        else robustReason="OK";
-                        if(robust)robustCount[0]++;
+                        else robustReason="TDOA_CANDIDATO";
+                        if(qualified)robustCount[0]++;
+                        if(repeated)repeatableCount[0]++;
                         try{
                             // Preserve v0.3 columns, append v0.3.1 diagnostics.
                             eventOutput.write(String.format(Locale.US,
@@ -293,15 +301,19 @@ public class MainActivity extends Activity {
                                 pose.quality,pose.timeNs,pose.q[0],pose.q[1],pose.q[2],pose.q[3],
                                 pose.yaw,pose.pitch,pose.roll));
                             eventOutput.write(String.format(Locale.US,
-                                ",%d,%d,%.4f,%s,%.4f,%.4f,%d,%.4f,%.4f,%d,%s\n",
+                                ",%d,%d,%.4f,%s,%.4f,%.4f,%d,%.4f,%.4f,%d,%s,%s,%s,%.5f,%s,%d,%.5f,%d,%d\n",
                                 first.onset0,first.onsetB,first.delayUs,first.quality,
                                 all.delayUs,windowDelta,st.count,st.medianUs,st.madUs,
-                                robust?1:0,robustReason));
+                                qualified?1:0,robustReason,knownReference,EmpiricalAxis.PROFILE,
+                                axis.rawScore,axis.sector,axis.beyondAirLimit?1:0,
+                                Math.max(0,Math.abs(est.delayUs)-EmpiricalAxis.THEORETICAL_AIR_LIMIT_US),
+                                repeated?1:0,firstAgree?1:0));
                         }catch(IOException e){throw new IllegalStateException("Falha CSV: "+e.getMessage(),e);}
                         details.append(String.format(Locale.US,
-                            "%+.1f us | %s | reps=%d MAD=%.1f us\n",
-                            est.delayUs,robust?"QUALIFICADO":robustReason,
-                            st.count,st.madUs));
+                            "%+.1f us | %s | reps=%d MAD=%.1f us | %s\n",
+                            est.delayUs,qualified?"TDOA_OK":robustReason,
+                            st.count,st.madUs,repeated?"REPETIVEL":"NAO_VALIDADO"));
+                        if(qualified)details.append(axis.display()).append("\n");
                     }
                     final String screen=details.toString();
                     runOnUiThread(() -> live.setText(screen));
@@ -314,8 +326,8 @@ public class MainActivity extends Activity {
                     lastUi=nowBoot;
                     long seconds=frames/actualRate;
                     final String status=String.format(Locale.US,
-                        "t=%ds: %d eventos, %d GCC candidatos, %d robustos, %d IMU | Timestamp OK=%d, rejeitado=%d",
-                        seconds,processedEvents[0],candidates[0],robustCount[0],syncedEvents[0],
+                        "t=%ds: %d eventos, %d GCC, %d TDOA_OK, %d repetiveis, %d IMU | Timestamp OK=%d, rejeitado=%d",
+                        seconds,processedEvents[0],candidates[0],robustCount[0],repeatableCount[0],syncedEvents[0],
                         audioClock.accepted(),audioClock.rejected());
                     writeLog(status);
                 }
@@ -323,7 +335,7 @@ public class MainActivity extends Activity {
             writeLog("Gravados "+frames+" frames; "+wavFile.getName());
             writeLog("Estalos detectados="+detector.detectedCount()+", analisados="
                 +processedEvents[0]+", descartados por fila="+detector.overflowCount()
-                +", GCC candidatos="+candidates[0]+", robustos="+robustCount[0]+", sincronizados IMU="+syncedEvents[0]+", blocos de eco suprimidos="+detector.suppressedBlocks());
+                +", GCC candidatos="+candidates[0]+", TDOA_OK="+robustCount[0]+", repetiveis="+repeatableCount[0]+", sincronizados IMU="+syncedEvents[0]+", blocos de eco suprimidos="+detector.suppressedBlocks());
             writeLog("AudioTimestamp aceitos="+clock.accepted()+", rejeitados="
                 +clock.rejected()+"; ausências também podem ocorrer.");
             writeLog("Arquivos: "+csvFile.getName()+" e "+imuFile.getName());

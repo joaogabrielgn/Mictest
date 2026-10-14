@@ -11,6 +11,9 @@ public final class SpatialDsp {
     private static final int FFT_N = 2048;
     private static final double DEFAULT_SPACING_METERS = 0.1426;
     private static final double SOUND_SPEED_M_S = 343.0;
+    // A wider SEARCH range is needed when the HAL provides processed channels
+    // with possible electronic group delay. This is NOT a physical timing bound.
+    private static final int SEARCH_MARGIN_SAMPLES = 20;
 
     private SpatialDsp() {}
 
@@ -20,12 +23,17 @@ public final class SpatialDsp {
         public final double peak, contrast, clippingFraction, difference;
         public final boolean valid;
         public final String reason;
+        public final boolean beyondIdealAirLimit;
+        public final double idealAirExcessUs;
         Estimate(int channel, double lag, double delayUs, double level0Db, double levelBDb,
                  double peak, double contrast, double clip, double difference, boolean valid, String reason) {
             this.channel = channel; this.delaySamples = lag; this.delayUs = delayUs;
             this.level0Db = level0Db; this.levelBDb = levelBDb;
             this.peak = peak; this.contrast = contrast; this.clippingFraction = clip;
             this.difference = difference; this.valid = valid; this.reason = reason;
+            this.idealAirExcessUs=Math.max(0,Math.abs(delayUs) -
+                DEFAULT_SPACING_METERS / SOUND_SPEED_M_S * 1.0e6);
+            this.beyondIdealAirLimit=idealAirExcessUs>0;
         }
         public String display() {
             return String.format(Locale.US,
@@ -88,7 +96,8 @@ public final class SpatialDsp {
             rms[ch] = Math.sqrt(power / FFT_N);
             clip[ch] = clipped / FFT_N;
         }
-        int maxLag = Math.min(64, (int)Math.ceil(rate * DEFAULT_SPACING_METERS / SOUND_SPEED_M_S) + 4);
+        int maxLag = Math.min(72, (int)Math.ceil(rate * DEFAULT_SPACING_METERS / SOUND_SPEED_M_S)
+            + SEARCH_MARGIN_SAMPLES);
         Estimate[] estimates = new Estimate[channels - 1];
         for (int ch = 1; ch < channels; ch++) {
             estimates[ch-1] = estimatePair(samples[0], samples[ch], rms[0], rms[ch],
@@ -173,16 +182,12 @@ public final class SpatialDsp {
         if (rmsA < .0008 || rmsB < .0008) reason="SINAL_FRACO";
         else if (clip > 0.0) reason="CLIPPING";
         else if (normalizedDifference < .015) reason="CANAIS_SIMILARES";
-        else if (bestLag == -maxLag || bestLag == maxLag) reason="LIMITE_GEOMETRICO";
+        else if (bestLag == -maxLag || bestLag == maxLag) reason="BORDA_BUSCA";
         else if (peak < 2.2 || contrast < .09) reason="PICO_AMBIGUO";
         double lag = -(bestLag + subSample);
-        // The physical constraint is applied to the measured lag, not just the FFT search range.
-        // Allow 1.25 samples of tolerance for interpolation / rate quantization. This is
-        // provisional until the Samsung processed-channel fixed offset is calibrated.
-        double physicalUs = DEFAULT_SPACING_METERS / SOUND_SPEED_M_S * 1.0e6;
-        double measuredUs = Math.abs(lag * 1.0e6 / rate);
-        if ("OK".equals(reason) && measuredUs > physicalUs + 1.25e6/rate)
-            reason = "FORA_LIMITE_FISICO";
+        // DO NOT reject physically excessive raw delays: S25 CAMCORDER channels
+        // are PROCESSED and may include unknown HAL delays. The physical limit
+        // is reported as separate, non-gating evidence in Estimate.
         return new Estimate(channel, lag, lag * 1e6 / rate,
             20*Math.log10(Math.max(rmsA,1e-10)),20*Math.log10(Math.max(rmsB,1e-10)),
             peak, contrast, clip, normalizedDifference, "OK".equals(reason), reason);

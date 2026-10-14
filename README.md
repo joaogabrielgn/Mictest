@@ -1,33 +1,36 @@
-# Acoustic Direction Lab v0.3.1 — correção de eventos acústicos
+# Acoustic Direction Lab v0.3.2 — perfil empírico S25 (sem IA)
 
-Aplicativo Android experimental para estudar a localização espacial de sons no Galaxy S25 (SM-S931B) sem inteligência artificial. Mantém gravação PCM multicanal, AudioTimestamp BOOTTIME, quaternions interpolados e exportação WAV/CSV/IMU da v0.3.
+Protótipo experimental para localização acústica com canais Android `CAMCORDER` processados, GCC-PHAT e sensores IMU. Não é câmera acústica nem fornece azimute, elevação ou distância reais. O aplicativo é aberto: [Mictest](https://github.com/joaogabrielgn/Mictest).
 
-## Instalação exclusivamente pelo S25
+## O que mudou
 
-Abra https://github.com/joaogabrielgn/Mictest/actions, escolha a execução **verde** mais recente **Build Android APK**, clique em **AcousticDirectionLab-APK** em **Artifacts** e extraia `app-debug.apk` do ZIP baixado. Instale pelo app Meus Arquivos. Se a assinatura de depuração impedir atualização, **exporte** seus arquivos antigos antes de desinstalar a v0.3; os dados privados podem ser apagados.
+1. **O limite ideal de 416 µs não rejeita mais a medição.** Ele gera `exceeds_ideal_air_limit=1` e `ideal_air_excess_us` apenas como informação diagnóstica. O canal processado pode introduzir atrasos eletrônicos. O intervalo de busca GCC-PHAT foi ampliado para encontrar picos além da faixa teórica ideal. Resultados na borda da busca ainda são rejeitados.
+2. **O início acústico deixa de ser veto automático.** Mantém `first_rise_delay_us` e `first_onset_agree` no CSV, mas um detector de limiar não deve invalidar sozinho GCC-PHAT consistente, dado processamento independente dos canais.
+3. **Duas medidas separadas:**
+   - `robust_candidate=1`, mostrado como **TDOA_OK**, indica GCC-PHAT e concordância inicial/completa sob os filtros heurísticos, sem converter em ângulo.
+   - `acoustic_repeatable=1` indica pelo menos três vizinhos em 2,5 s com diferença de pose até 8 graus, MAD <=35 µs e proximidade da mediana. Isso pode demorar alguns cliques e é **métrica de repetibilidade local**, não precisão global.
+4. **Referência rotulável.** Novo seletor: `NÃO_ROTULADA`, `MIC_INFERIOR`, `MIC_SUPERIOR`, `CENTRO`, `VARREDURA_FONTE_FIXA`. Sua escolha entra em todas as linhas CSV e ajuda a montar calibração e validação posteriores.
+5. **Índice experimental 1D no eixo físico dos microfones.** Perfil piloto, derivado das gravações já rotuladas pelo usuário em 14/10/2026:
+   - `MIC_INFERIOR`: **−434,7 µs** (no último teste, extremidade **direita**).
+   - `CENTRO`: **−2,8 µs**, obtido de poucos eventos.
+   - `MIC_SUPERIOR`: **+472,1 µs** (no último teste, extremidade **esquerda**).
 
-## Principais correções da v0.3.1
+A interpolação por trechos fornece o índice adimensional −1 (inferior) a +1 (superior), com zero na referência central. Direções não necessariamente sobre esse eixo podem ter o mesmo índice. **Não é arcoseno, ângulo, posição da imagem, azimute ou localização 3D.** Gravações em ambientes diferentes, com sons diferentes e processamento variável não foram validadas. Fora dos extremos, o app avisa `FORA_PERFIL_PILOTO` e mantém o valor para análise, sem extrapolar uma suposta direção confiável. Os dados não são usados para treinar IA.
 
-- **Bloqueio de disparos repetidos:** janela refratária de 350 ms (contra 140 ms anteriores). Registra a quantidade de blocos candidatos suprimidos. Isso reduz a chance de que reverberação ou cauda do estalo seja computada como um segundo evento. Também significa que estalos reais com menos de 350 ms de intervalo podem ser ignorados.
-- **Janela acústica inicial:** o GCC-PHAT é medido nas primeiras 1024 amostras da janela de 2048 frames, que inclui cerca de 5 ms antes do gatilho. A estimativa da janela completa é calculada separadamente; discordâncias acima de 125 µs fazem o candidato ser sinalizado. Janelas usam taper de borda curta em vez de Hann, para não atenuar excessivamente os primeiros transientes.
-- **Primeira subida dos canais:** estimativa independente e *heurística* do primeiro transiente em cada canal, comparada ao GCC-PHAT. Início e GCC que divergem acima de 150 µs recebem `INICIO_DIVERGE`. **Não é detecção comprovada do trajeto direto** e pode falhar com ruído, som processado, reflexões e diferenças de volume.
-- **Saturação:** um único frame muito próximo do limite digital (>= 99,5% da escala) já é suficiente para rejeição. O filtro anterior aceitava cliques saturados quando representavam menos de 1% da janela.
-- **Limite físico:** candidatos além de d/c (142,6 mm/343 m/s = ~416 µs) mais tolerância de 1,25 amostra são rotulados `FORA_LIMITE_FISICO`. **Essa regra é provisória**: canais processados podem introduzir atrasos eletrônicos ainda não calibrados; a rejeição não comprova que o som seja inválido.
-- **Estabilidade local:** medianas e MAD robusta calculadas somente entre eventos próximos no tempo (2,5 s) e com orientação de até 8° de diferença. Eventos claramente discordantes (> max(90 µs, quatro desvios MAD escalonados)) podem ser sinalizados `DISPERSAO_ELEVADA`. Não se compara diretamente uma direção diferente durante rotação.
-- **Dados transparentes:** o CSV preserva todos os campos da v0.3, acrescentando primeiro transiente de cada canal, atraso inicial, comparações de janelas, número de vizinhos, mediana, MAD e `robust_candidate / robust_reason`.
+### Instalação S25
 
-**QUALIFICADO / robust_candidate=1** significa somente que o evento passou pelos filtros adotados (audio timestamp, pose IMU, GCC, início acústico, saturação, geometria e estabilidade). Não é uma probabilidade, precisão angular ou confirmação de que o app identificou a fonte corretamente.
+1. Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions).
+2. Escolha a última execução com marca **verde**, baixe em **Artifacts** o ZIP `AcousticDirectionLab-APK`.
+3. Extraia o `app-debug.apk` e instale. Caso a assinatura de debug difira, exporte WAV/CSV antigos antes de desinstalar a versão anterior; a desinstalação pode apagar dados do app.
 
-## Testes de bancada
+### Testes
 
-O fluxo CI roda testes sintéticos do GCC-PHAT, detecção de estalos cruzando buffers, bloqueio de ecos, primeira chegada, restrição geométrica, clipping, sincronização temporal, interpolação de quaternions e mediana/MAD; gera APK ao final.
+Use `CAMCORDER · 2 canais · 48000 Hz` e S25 horizontal. Desative conexões Bluetooth de áudio para evitar seleção acidental de outro microfone; confirme sempre no relatório os microfones ativos 22/23. No seletor de **posição de referência**, escolha a posição da FONTE relativa às extremidades físicas, não à esquerda/direita da tela.
 
-Na posição **horizontal (paisagem)**, os microfones identificados do S25 ficam aproximadamente próximos às extremidades esquerda/direita, não acima/abaixo da imagem.
+Para validação **fora da amostra** (não usada para gerar os três valores-piloto), faça três registros estacionários de 10–15 segundos: `MIC_INFERIOR` (fonte ao longo da extremidade inferior física), `MIC_SUPERIOR` e `CENTRO`, com estalos suaves no ar separados >=0,5 s. Se quiser, faça uma quarta gravação com `VARREDURA_FONTE_FIXA` de 20–30 s, fonte fixa e movimentando apenas o telefone, mantendo aproximadamente o mesmo centro no espaço. Exporte WAV + CSV da análise e, da varredura, também IMU CSV.
 
-Configuração: `CAMCORDER` | `2 canais` | `48000 Hz`.
+Objetivo de aceitação desta versão: reconhecer os padrões de sinais opostos, identificar seus limites empíricos, registrar repetibilidade e verificar se o perfil piloto se sustenta em novos dados. **Só depois** tentaremos converter os sinais em direção espacial com incerteza calibrada; para isso serão necessárias referências angulares intermediárias.
 
-**Três gravações estáticas:** imóvel no suporte, estalos no ar a 0,5–1 m (sem bater na mesa), posicionados respectivamente na lateral do microfone à esquerda, na extremidade oposta à direita e à frente da traseira, centralizados. 10–15 segundos em cada posição, cliques separados por pelo menos 0,5 s.
+### Limitações
 
-**Uma varredura:** deixe a fonte fixa a 1–2 m e movimente somente o S25 durante 25–30 s, girando devagar para esquerda/direita e inclinando depois para cima/baixo; sem cobrir os microfones. Faça estalos separados por >=0,5 s e exporte **WAV + análise CSV + IMU CSV**.
-
-O S25 declarou canais `PROCESSED` para CAMCORDER, portanto a independência e constância do atraso intercanal não estão comprovadas. Mesmo filtros de boa qualidade não recuperam informação espacial inexistente. Esta versão não apresenta nem valida azimute, elevação, distância ou um marcador na câmera. Próxima etapa: avaliar estatisticamente as medições em direções conhecidas e somente depois implementar calibração geométrica.
+Os microfones da Samsung foram relatados como `C0:PROCESSED` por ambos os dispositivos: os canais não são dados brutos garantidos. O perfil piloto é específico do S25 testado, modo CAMCORDER e da coleta mencionada, e não pode ser transferido automaticamente para outros telefones. Perfis e limites de geometria física são informações separadas.
