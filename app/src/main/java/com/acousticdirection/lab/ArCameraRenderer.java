@@ -32,7 +32,8 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
     public interface Listener {
         void onVisual(int x,int y,boolean visible,String referenceMode,
                       String tracking,String description);
-        void onMark(String referenceMode);
+        void onMark(String referenceMode,float xPx,float yPx,int viewWidth,int viewHeight,
+                    float[] projection);
         void onError(String error);
     }
     private final Listener listener;
@@ -246,7 +247,9 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
             }
             poseBridge.clear();
         }
-        listener.onMark(mode);
+        float[] cameraProjection=new float[16];
+        camera.getProjectionMatrix(cameraProjection,0,.1f,100f);
+        listener.onMark(mode,x,y,width,height,cameraProjection);
     }
     private float[] project(Camera camera,double[] point){
         float[] view=new float[16],projection=new float[16];
