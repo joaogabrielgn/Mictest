@@ -67,6 +67,8 @@ public final class ARCalibrationActivity extends Activity {
     private int windows=0,accepted=0,timestampFails=0,arTimeFails=0;
     private volatile String arTracking="ARCore iniciando";
     private volatile String markerMode="SEM_MARCA";
+    private volatile String markedCameraGeometry="SEM_MARCA";
+    private final java.util.ArrayList<String> routes=new java.util.ArrayList<>();
     private volatile WorldDirectionSolver.Result lastDirection=null;
     private volatile double lastAngularError=Double.NaN;
     private long lastUiNs=0;
@@ -90,9 +92,13 @@ public final class ARCalibrationActivity extends Activity {
                     if(!audioRunning)status.setText(arTracking+"\nToque na fonte para definir referência");
                 });
             }
-            @Override public void onMark(String mode){
+            @Override public void onMark(String mode,float px,float py,int w,int h,
+                    float[] projection){
                 calibration.clear();
                 validator3d.reset();
+                markedCameraGeometry=String.format(Locale.US,
+                    "mode=%s, pixel=(%.2f,%.2f), view=(%d,%d), projection=%s",
+                    mode,px,py,w,h,java.util.Arrays.toString(projection));
                 lastDirection=null;lastAngularError=Double.NaN;
                 runOnUiThread(()->{
                     markerMode=mode;
@@ -291,6 +297,20 @@ public final class ARCalibrationActivity extends Activity {
                 "model_gain_us,model_training_mae_us,3d_status,3d_rms_projection,"+
                 "3d_angular_error_vs_mark_deg\n");
             ar.startRecording();
+            try{
+                StringBuilder route=new StringBuilder();
+                route.append("segment=").append(suffix).append("; ");
+                for(android.media.MicrophoneInfo mic:ar.getActiveMicrophones()){
+                    route.append("[id=").append(mic.getId())
+                        .append(",name=").append(mic.getDescription())
+                        .append(",type=").append(mic.getType())
+                        .append(",channels=").append(mic.getChannelMapping())
+                        .append("] ");
+                }
+                synchronized(routes){routes.add(route.toString());}
+            }catch(Exception e){
+                synchronized(routes){routes.add("segment="+suffix+"; mic route unavailable: "+e);}
+            }
             if(ar.getRecordingState()!=AudioRecord.RECORDSTATE_RECORDING)
                 throw new IOException("AudioRecord não iniciou");
             final BufferedWriter out=csv;
@@ -449,6 +469,8 @@ public final class ARCalibrationActivity extends Activity {
         java.util.ArrayList<File> files;
         synchronized(capturedSegments){files=new java.util.ArrayList<>(capturedSegments);}
         String rows=calibration.exportRows();
+        String routing;
+        synchronized(routes){routing=String.join("\n",routes);}
         AudiovisualCalibration.Fit fit=calibration.isValidation()?
             calibration.fitted():calibration.preview();
         AudiovisualCalibration.Validation validation=calibration.validate();
@@ -462,6 +484,8 @@ public final class ARCalibrationActivity extends Activity {
                     "AR capture and audio are aligned by approximate BOOTTIME, not"+
                     " hardware-synchronized. Fast gestures should be excluded.\n"+
                     "Tracking mode on last frame: "+markerMode+"\n"+
+                    "Marked camera geometry: "+markedCameraGeometry+"\n"+
+                    "Active microphones by capture: "+routing+"\n"+
                     "Acoustic reference: "+fit.display()+"\n"+
                     "Separate validation: "+validation.display()+"\n"+
                     "Number windows: "+windows+" admitted: "+accepted+
