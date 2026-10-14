@@ -20,7 +20,8 @@ public class MainActivity extends Activity {
     private final StringBuilder report = new StringBuilder();
     private Spinner sourceSpinner, channelSpinner, rateSpinner, referenceSpinner, modeSpinner;
     private Button startButton, stopButton;
-    private TextView live, log;
+    private TextView live, log, view3d;
+    private volatile boolean reset3dRequested=false;
     private AxisIndicatorView axisIndicator;
     private AudioManager manager;
     private volatile boolean running = false;
@@ -40,7 +41,7 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title(root, "ACOUSTIC DIRECTION LAB", 21, 0xFF62E0C3);
-        title(root, "Coerência + IMU + direção 1D / v0.4.2", 14, Color.LTGRAY);
+        title(root, "Direção 1D + varredura 3D piloto / v0.4.3", 14, Color.LTGRAY);
         modeSpinner=selector(root,"Modo de análise",
             new String[]{"SOM_CONTINUO","ESTALOS_CALIBRACAO"},0);
         sourceSpinner = selector(root, "Fonte", sourceNames, 2);
@@ -52,6 +53,11 @@ public class MainActivity extends Activity {
         startButton = button(controls, "Iniciar", 0xFF00796B, () -> start());
         stopButton = button(controls, "Parar", 0xFF984348, () -> {running = false; stopButton.setEnabled(false);});
         stopButton.setEnabled(false);
+        LinearLayout scanControls=row(root);
+        button(scanControls,"Reiniciar varredura 3D",0xFF34546A,()->{
+            reset3dRequested=true;
+            Toast.makeText(this,"Nova varredura 3D solicitada",Toast.LENGTH_SHORT).show();
+        });
         LinearLayout actions = row(root);
         button(actions, "Listar microfones", 0xFF34546A, () -> listMicrophones());
         button(actions, "Copiar relatório", 0xFF34546A, () -> copyReport());
@@ -74,12 +80,22 @@ public class MainActivity extends Activity {
         axisIndicator=new AxisIndicatorView(this);
         root.addView(axisIndicator,new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,dp(145)));
+        title(root,"Reconstrução 3D por rotação — experimental",15,Color.WHITE);
+        view3d=new TextView(this);
+        view3d.setTextColor(0xFFFFC878);view3d.setTextSize(13);
+        view3d.setTypeface(Typeface.MONOSPACE);
+        view3d.setPadding(dp(10),dp(10),dp(10),dp(10));
+        view3d.setBackgroundColor(0xFF172E3A);
+        view3d.setText("3D: aguardando varredura. Faça giros e inclinações com a fonte parada.");
+        root.addView(view3d);
         title(root, "Relatório técnico", 17, Color.WHITE);
         log = new TextView(this);
         log.setTextColor(Color.WHITE); log.setTextSize(12);
         log.setTypeface(Typeface.MONOSPACE); log.setTextIsSelectable(true);
         root.addView(log);
-        writeLog("Acoustic Direction Lab v0.4.2");
+        writeLog("Acoustic Direction Lab v0.4.3");
+        writeLog("Varredura 3D: estimativa experimental por TDOA+IMU com rejeição por cobertura e erro.");
+        writeLog("3D requer FONTE PARADA, rotações em mais de um eixo e áudio processado estável.");
         writeLog("Direção visual: índice calibrado de microfones, SEM azimute, distância nem posição na câmera.");
         writeLog("Rotação com quaternions: estabilidade temporal só é exibida após período parado.");
         writeLog("Atrasos de banda única podem ser candidatos ou temporalmente estáveis.");
@@ -176,7 +192,9 @@ public class MainActivity extends Activity {
         final int rate = rates[rateSpinner.getSelectedItemPosition()];
         final boolean continuousMode=modeSpinner.getSelectedItemPosition()==0;
         final String knownReference=(String)referenceSpinner.getSelectedItem();
+        reset3dRequested=false;
         running = true; startButton.setEnabled(false); stopButton.setEnabled(true);
+        if(view3d!=null)view3d.setText("3D: preparando captura...");
         motion.start();
         new Thread(() -> record(sourceIndex, channels, rate,continuousMode,knownReference), "CapturePCM").start();
     }
@@ -215,6 +233,9 @@ public class MainActivity extends Activity {
             final int[] continuousCount={0},continuousReliable={0},continuousStable={0},continuousCandidates={0},
                 motionPlausible={0},motionRejected={0};
             final MotionEvidence motionEvidence=new MotionEvidence();
+            final WorldDirectionSolver directionSolver=new WorldDirectionSolver();
+            final WorldDirectionSolver.Result[] directionState={null};
+            final int[] accepted3d={0}, available3d={0};
             final long[] stationarySinceNs={-1};
             final long[] lastContinuousUi={0};
             final DelayStability[] stability=new DelayStability[Math.max(0,actualChannels-1)];
@@ -247,7 +268,7 @@ public class MainActivity extends Activity {
             csvOut.write("onset_frame,window_start_frame,audio_boottime_ns,audio_time_status,anchor_frame,anchor_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,trigger_ratio,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,first_rise_C0_sample,first_rise_B_sample,first_rise_delay_us,first_rise_status,full_window_delay_us,early_full_delta_us,stable_neighbors,stable_median_us,stable_mad_us,robust_candidate,robust_reason,reference_label,axis_profile,empirical_axis_score,empirical_sector,exceeds_ideal_air_limit,ideal_air_excess_us,acoustic_repeatable,first_onset_agree\n");
             imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\n");
             if(continuousOutput!=null)continuousOutput.write(
-                "center_frame,audio_boottime_ns,audio_time_status,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,level_dbfs,level_diff_db,spectral_flatness,dominant_band,raw_delay_us,smoothed_delay_us,quality_status,reliable,valid_bands,agreeing_bands,empirical_axis_score,empirical_axis_sector,reference_label,low_delay_us,low_peak,low_contrast,low_reason,mid_delay_us,mid_peak,mid_contrast,mid_reason,high_delay_us,high_peak,high_contrast,high_reason,adaptive_delay_us,adaptive_peak,adaptive_contrast,adaptive_reason,adaptive_low_hz,adaptive_high_hz,confidence_class,temporal_stable,temporal_neighbors,temporal_median_us,temporal_mad_us,motion_status,rotation_deg_600ms,rotation_speed_deg_s,max_geometric_change_us,pose_adjusted_stable,axis_preview_status,low_coherence,low_peak_count,low_alt_delay_us,low_alt_peak_ratio,mid_coherence,mid_peak_count,mid_alt_delay_us,mid_alt_peak_ratio,high_coherence,high_peak_count,high_alt_delay_us,high_alt_peak_ratio,adaptive_coherence,adaptive_peak_count,adaptive_alt_delay_us,adaptive_alt_peak_ratio\n");
+                "center_frame,audio_boottime_ns,audio_time_status,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,level_dbfs,level_diff_db,spectral_flatness,dominant_band,raw_delay_us,smoothed_delay_us,quality_status,reliable,valid_bands,agreeing_bands,empirical_axis_score,empirical_axis_sector,reference_label,low_delay_us,low_peak,low_contrast,low_reason,mid_delay_us,mid_peak,mid_contrast,mid_reason,high_delay_us,high_peak,high_contrast,high_reason,adaptive_delay_us,adaptive_peak,adaptive_contrast,adaptive_reason,adaptive_low_hz,adaptive_high_hz,confidence_class,temporal_stable,temporal_neighbors,temporal_median_us,temporal_mad_us,motion_status,rotation_deg_600ms,rotation_speed_deg_s,max_geometric_change_us,pose_adjusted_stable,axis_preview_status,low_coherence,low_peak_count,low_alt_delay_us,low_alt_peak_ratio,mid_coherence,mid_peak_count,mid_alt_delay_us,mid_alt_peak_ratio,high_coherence,high_peak_count,high_alt_delay_us,high_alt_peak_ratio,adaptive_coherence,adaptive_peak_count,adaptive_alt_delay_us,adaptive_alt_peak_ratio,3d_status,3d_available,3d_observations,3d_coverage_deg,3d_rank_ratio,3d_rms_projection,3d_horizontal_rear_deg,3d_vertical_rear_deg,3d_rear_hemisphere,3d_world_x,3d_world_y,3d_world_z,3d_device_x,3d_device_y,3d_device_z,3d_candidate_accepted\n");
             if(continuousMode)writeLog("MODO CONTÍNUO 0.4.1: três bandas fixas + banda adaptativa e histórico temporal.");
             writeLog("v0.3.2: dois níveis: qualidade de TDOA + repetibilidade em pose semelhante.");
             writeLog("Referência rotulada pelo usuário: "+knownReference);
@@ -301,10 +322,41 @@ public class MainActivity extends Activity {
                         mapped.timeNs-stationarySinceNs[0]>=700_000_000L;
                     boolean poseAdjustedStable=window.temporalStable &&
                         stationaryMature && motionResult.stationary;
+                    // Do not treat tonal flatness alone as an absolute veto.
+                    boolean tonalSevere="TONAL_AMBIGUO".equals(window.status);
+                    boolean tonalProvisional=window.status.startsWith("TONAL_");
                     String previewStatus=window.reliable && pose.valid && mapped.valid?
                         "MULTIBANDA_EIXO":poseAdjustedStable?"PARADO_ESTAVEL":
-                        motionResult.moving&&motionResult.plausible?
+                        motionResult.moving&&motionResult.plausible&&
+                            !tonalSevere&&Double.isFinite(window.rawDelayUs)?
                             "ROTACAO_EIXO_INCERTO":"SEM_DIRECAO_VALIDADA";
+                    if(reset3dRequested){
+                        directionSolver.reset();
+                        directionState[0]=null;
+                        reset3dRequested=false;
+                        stationarySinceNs[0]=-1;
+                    }
+                    boolean coherentBand=false;
+                    for(ContinuousTracker.Band band:window.bands){
+                        if(band.valid && band.spectralCoherence>=.22 &&
+                           band.peakRatio>=2.5 && band.alternatePeakRatio<.92){
+                            coherentBand=true;break;
+                        }
+                    }
+                    // 3D scan accepts diagnostically useful windows during motion;
+                    // requiring motion-adjusted stationarity here would defeat
+                    // the purpose of a rotating baseline. Fit has strict gates.
+                    boolean candidate3d=pose.valid&&mapped.valid&&
+                        Double.isFinite(window.rawDelayUs)&&!window.clipped&&
+                        window.levelDb> -52 && coherentBand && !tonalSevere &&
+                        (!motionResult.moving || motionResult.plausible);
+                    if(continuousCount[0]%8==0){
+                        directionState[0]=directionSolver.add(mapped.valid?mapped.timeNs:-1,
+                            pose.valid?pose.q:null,window.rawDelayUs,candidate3d);
+                        if(candidate3d)accepted3d[0]++;
+                        if(directionState[0].available)available3d[0]++;
+                    }
+                    final WorldDirectionSolver.Result direction=directionState[0];
                     EmpiricalAxis.Axis axis=Double.isFinite(window.rawDelayUs)?
                         EmpiricalAxis.estimate(window.rawDelayUs):null;
                     try {
@@ -336,6 +388,20 @@ public class MainActivity extends Activity {
                                 ",%.5f,%d,%.4f,%.4f",
                                 band.spectralCoherence,band.candidatePeaks,
                                 band.alternateDelayUs,band.alternatePeakRatio));
+                        if(direction!=null){
+                            continuousOutput.write(String.format(Locale.US,
+                                ",%s,%d,%d,%.3f,%.6f,%.6f,%.3f,%.3f,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d",
+                                direction.status,direction.available?1:0,
+                                direction.observations,direction.spanDegrees,
+                                direction.rankRatio,direction.rmsProjection,
+                                direction.horizontalCameraDeg,direction.verticalCameraDeg,
+                                direction.rearHemisphere?1:0,
+                                direction.world[0],direction.world[1],direction.world[2],
+                                direction.device[0],direction.device[1],direction.device[2],
+                                candidate3d?1:0));
+                        }else{
+                            continuousOutput.write(",INICIANDO,0,0,NaN,NaN,NaN,NaN,NaN,0,NaN,NaN,NaN,NaN,NaN,NaN,0");
+                        }
                         continuousOutput.newLine();
                     } catch(IOException e){throw new IllegalStateException("CSV contínuo: "+e.getMessage(),e);}
                     long uiTime=android.os.SystemClock.elapsedRealtimeNanos();
@@ -357,11 +423,15 @@ public class MainActivity extends Activity {
                             "\nMovimento: %s | %.1f° | %.1f°/s",
                             motionResult.status,motionResult.relativeDegrees,
                             motionResult.speedDegPerSec));
+                        if(tonalProvisional)
+                            output.append("\nTONAL: indicação provisória, pode ter picos alternativos.");
                         final String currentView=output.toString();
+                        final String current3d=direction==null?"3D: coletando dados...":
+                            direction.display();
                         final EmpiricalAxis.Axis currentAxis=axis;
                         final boolean displayAxis=currentAxis!=null &&
                             !"SEM_DIRECAO_VALIDADA".equals(previewStatus) &&
-                            !window.clipped &&
+                            !window.clipped&&!tonalSevere &&
                             Double.isFinite(window.rawDelayUs);
                         double mad=window.temporalMadUs;
                         final double uncertaintyScore=Double.isFinite(mad)?
@@ -369,9 +439,11 @@ public class MainActivity extends Activity {
                         final String viewStatus=previewStatus;
                         runOnUiThread(()->{
                             live.setText(currentView);
+                            view3d.setText(current3d);
                             axisIndicator.show(displayAxis?currentAxis.rawScore:Double.NaN,
                                 uncertaintyScore,viewStatus,
-                                !("MULTIBANDA_EIXO".equals(viewStatus) && !motionResult.moving));
+                                !("MULTIBANDA_EIXO".equals(viewStatus) &&
+                                    !motionResult.moving && !tonalProvisional));
                         });
                     }
                 });
@@ -464,6 +536,8 @@ public class MainActivity extends Activity {
                 ", atrasos candidatos="+continuousCandidates[0]+
                 ", rotações plausíveis="+motionPlausible[0]+
                 ", rotações incompatíveis="+motionRejected[0]+
+                ", observações 3D admitidas="+accepted3d[0]+
+                ", soluções 3D preliminares="+available3d[0]+
                 "; arquivo="+continuousFile.getName());
             writeLog("Gravados "+frames+" frames; "+wavFile.getName());
             writeLog("Estalos detectados="+detector.detectedCount()+", analisados="

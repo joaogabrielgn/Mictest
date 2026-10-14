@@ -256,6 +256,16 @@ public final class ContinuousTracker {
         String status;
         boolean reliable=false;
         boolean tonal=flatness<.0015;
+        // A tonal spectrum alone is not grounds to hide a repeatable lag.
+        // Inspect uniqueness of the peak and interchannel coherence as well.
+        boolean resolvedTone=false;
+        for(int b=0;b<BANDS.length;b++){
+            Band band=estimates[b];
+            if(band.valid && band.spectralCoherence>=.35 &&
+               band.peakRatio>=2.8 && band.alternatePeakRatio<.82 &&
+               band.candidatePeaks<=4)resolvedTone=true;
+        }
+        boolean tonalAmbiguous=tonal&&!resolvedTone;
         if(quiet)status="SILENCIO";
         else if(clipDetected)status="CLIPPING";
         else {
@@ -279,14 +289,15 @@ public final class ContinuousTracker {
             Band adaptive=estimates[BANDS.length];
             if(!Double.isFinite(raw)&&adaptive.valid)raw=adaptive.delayUs;
             if(!Double.isFinite(raw))status="SEM_PICO_CONFIAVEL";
-            else if(tonal)status="TONAL_AMBIGUO";
+            else if(tonalAmbiguous)status="TONAL_AMBIGUO";
+            else if(tonal)status="TONAL_CANDIDATO";
             else if(agreeing>=2){status="MULTIBANDA_OK";reliable=true;}
             else status="CANDIDATO_UNICA_BANDA";
         }
         TemporalEvidence.Result evidence=temporal.observe(frames-WINDOW/2,
-            raw,Double.isFinite(raw)&&!quiet&&!clipDetected,tonal);
+            raw,Double.isFinite(raw)&&!quiet&&!clipDetected,tonalAmbiguous);
         if(!reliable&&evidence.stable&&Double.isFinite(raw))
-            status="TEMPORAL_ESTAVEL_BANDA_UNICA";
+            status=tonal?"TONAL_TEMPORAL_PROVISORIO":"TEMPORAL_ESTAVEL_BANDA_UNICA";
         double smoothed=updateSmoother(raw,reliable||evidence.stable);
         return new Window(frames-WINDOW/2,levelDb,diffDb,flatness,raw,smoothed,
             agreeing,validCount,reliable,clipDetected,status,NAMES[dominant],

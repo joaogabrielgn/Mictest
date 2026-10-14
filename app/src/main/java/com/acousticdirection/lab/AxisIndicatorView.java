@@ -37,6 +37,9 @@ public final class AxisIndicatorView extends View {
         float den=getResources().getDisplayMetrics().density;
         float w=getWidth(),h=getHeight(),left=24*den,right=w-24*den;
         float middle=.5f*(left+right),y=.45f*h;
+        // Reserve visible margin beyond the original ±1 pilot anchors.
+        // A small overrun near -435/+472us is not a detection failure.
+        float calibratedHalf=(right-left)/2.36f;
         final int fg=0xffd5e5ef,muted=0xff819cab,accent=0xff56dbbc,
             provisionalColor=0xffe5ac55;
         text(canvas,"EIXO FÍSICO DOS MICROFONES — NÃO É ÂNGULO 3D",
@@ -46,12 +49,16 @@ public final class AxisIndicatorView extends View {
         canvas.drawLine(left,y,right,y,paint);
         paint.setStrokeWidth(1*den);
         canvas.drawLine(middle,y-10*den,middle,y+10*den,paint);
-        text(canvas,"Inferior",left,y+23*den,12*den,fg);
+        float lowerX=middle-calibratedHalf,upperX=middle+calibratedHalf;
+        paint.setColor(muted);paint.setStrokeWidth(1*den);
+        canvas.drawLine(lowerX,y-9*den,lowerX,y+9*den,paint);
+        canvas.drawLine(upperX,y-9*den,upperX,y+9*den,paint);
+        text(canvas,"Inferior",lowerX,y+23*den,12*den,fg);
         text(canvas,"Centro",middle,y+23*den,12*den,fg);
-        text(canvas,"Superior",right,y+23*den,12*den,fg);
+        text(canvas,"Superior",upperX,y+23*den,12*den,fg);
         if(Double.isFinite(score)){
-            float center=(float)(middle+Math.max(-1,Math.min(1,score))*(right-left)/2);
-            float band=(float)(halfWidth*(right-left)/2);
+            float center=(float)(middle+Math.max(-1.18,Math.min(1.18,score))*calibratedHalf);
+            float band=(float)(halfWidth*calibratedHalf);
             paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(11*den);
             paint.setColor(provisional?0x77e5ac55:0x6656dbbc);
             canvas.drawLine(Math.max(left,center-band),y,
@@ -59,7 +66,7 @@ public final class AxisIndicatorView extends View {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(provisional?provisionalColor:accent);
             canvas.drawCircle(center,y,7*den,paint);
-            String clamped=Math.abs(score)>1?" • fora do perfil":"";
+            String clamped=Math.abs(score)>1?" • além do ponto piloto":"";
             text(canvas,String.format(Locale.US,"Índice %+.2f%s",score,clamped),
                 w/2,h-29*den,12*den,fg);
             text(canvas,grade,w/2,h-10*den,10*den,muted);
