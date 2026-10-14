@@ -152,7 +152,7 @@ public class MainActivity extends Activity {
         new Thread(() -> record(sourceIndex, channels, rate), "CapturePCM").start();
     }
     private void record(int sourceIndex, int channelCount, int rate) {
-        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         AudioRecord ar = null;
         WavWriter wav = null;
         long frames = 0;
