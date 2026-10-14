@@ -55,7 +55,14 @@ public class MainActivity extends Activity {
         stopButton.setEnabled(false);
         LinearLayout arControls=row(root);
         button(arControls,"Abrir calibração com câmera + ARCore",
-            0xFF00796B,()->startActivity(new Intent(this,ARCalibrationActivity.class)));
+            0xFF00796B,()->{
+                if(running){
+                    Toast.makeText(this,"Pare a gravação atual antes de abrir a câmera AR.",
+                        Toast.LENGTH_LONG).show();
+                }else{
+                    startActivity(new Intent(this,ARCalibrationActivity.class));
+                }
+            });
         LinearLayout scanControls=row(root);
         button(scanControls,"Reiniciar varredura 3D",0xFF34546A,()->{
             reset3dRequested=true;
