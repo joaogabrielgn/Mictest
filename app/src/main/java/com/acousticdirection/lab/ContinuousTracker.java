@@ -21,6 +21,11 @@ public final class ContinuousTracker {
     private final short[] ring;
     private final ArrayDeque<Double> history=new ArrayDeque<>();
     private final TemporalEvidence temporal;
+    // Exponential cross-spectral averaging provides an *estimated* interchannel
+    // magnitude-squared coherence. Overlapping windows are correlated.
+    private final double[] crossReAvg=new double[WINDOW],crossImAvg=new double[WINDOW],
+                           pxxAvg=new double[WINDOW],pyyAvg=new double[WINDOW];
+    private int spectraSeen=0;
     private long frames=0,lastWindowFrame=-1;
     private double smooth=Double.NaN;
     private long lastGoodFrame=-1;
@@ -30,12 +35,17 @@ public final class ContinuousTracker {
     public static final class Band {
         public final String name;
         public final double delayUs,energyDb,peakRatio,contrast;
+        public final double spectralCoherence, alternateDelayUs,alternatePeakRatio;
+        public final int candidatePeaks;
         public final boolean valid;
         public final String reason;
         Band(String name,double delayUs,double energyDb,double peak,double contrast,
-             boolean valid,String reason){
+             boolean valid,String reason,double coherence,int nPeaks,
+             double alternateDelay,double alternateRatio){
             this.name=name;this.delayUs=delayUs;this.energyDb=energyDb;
             this.peakRatio=peak;this.contrast=contrast;this.valid=valid;this.reason=reason;
+            spectralCoherence=coherence;candidatePeaks=nPeaks;
+            alternateDelayUs=alternateDelay;alternatePeakRatio=alternateRatio;
         }
     }
     public static final class Window {
@@ -117,6 +127,22 @@ public final class ContinuousTracker {
         boolean clipDetected=clip>0;
         SpatialDsp.fft(xr,xi,false);
         SpatialDsp.fft(yr,yi,false);
+        double alpha=spectraSeen<2?.65:.28;
+        for(int k=0;k<WINDOW;k++){
+            double rr=xr[k]*yr[k]+xi[k]*yi[k];
+            double ii=xi[k]*yr[k]-xr[k]*yi[k];
+            double xx=xr[k]*xr[k]+xi[k]*xi[k];
+            double yy=yr[k]*yr[k]+yi[k]*yi[k];
+            if(spectraSeen==0){
+                crossReAvg[k]=rr;crossImAvg[k]=ii;pxxAvg[k]=xx;pyyAvg[k]=yy;
+            } else {
+                crossReAvg[k]=(1-alpha)*crossReAvg[k]+alpha*rr;
+                crossImAvg[k]=(1-alpha)*crossImAvg[k]+alpha*ii;
+                pxxAvg[k]=(1-alpha)*pxxAvg[k]+alpha*xx;
+                pyyAvg[k]=(1-alpha)*pyyAvg[k]+alpha*yy;
+            }
+        }
+        spectraSeen++;
         double[] spectrum=new double[WINDOW/2+1];
         double bandPowerSum=0;
         double logSum=0,arithSum=0;
@@ -155,31 +181,52 @@ public final class ContinuousTracker {
             double bandDb=10*Math.log10(Math.max(bandPower[b],1e-20));
             if(quiet||fraction<.025){
                 estimates[b]=new Band(name,Double.NaN,bandDb,0,0,false,
-                    quiet?"SILENCIO":"ENERGIA_INSUFICIENTE");
+                    quiet?"SILENCIO":"ENERGIA_INSUFICIENTE",
+                    0,0,Double.NaN,0);
                 continue;
             }
             double[] re=new double[WINDOW],im=new double[WINDOW];
+            double cohWeighted=0, cohTotal=0;
+            int positivePeaks=0;
             for(int k=1;k<WINDOW;k++){
                 double hz=Math.min(k,WINDOW-k)*(double)rate/WINDOW;
                 double lower=b==BANDS.length?adaptiveHz[0]:BANDS[b][0];
                 double upper=b==BANDS.length?adaptiveHz[1]:BANDS[b][1];
                 if(hz<lower||hz>=upper)continue;
-                double rr=xr[k]*yr[k]+xi[k]*yi[k];
-                double ii=xi[k]*yr[k]-xr[k]*yi[k];
+                double rr=crossReAvg[k],ii=crossImAvg[k];
                 double amp=Math.hypot(rr,ii);
-                if(amp>1e-9){re[k]=rr/amp;im[k]=ii/amp;}
+                double denominator=pxxAvg[k]*pyyAvg[k]+1e-20;
+                double msc=Math.max(0,Math.min(1,(rr*rr+ii*ii)/denominator));
+                double power=pxxAvg[k]+pyyAvg[k];
+                cohWeighted+=msc*power;
+                cohTotal+=power;
+                if(amp>1e-9){
+                    // A low-coherence bin contributes less, but is not erased
+                    // solely because of the Samsung audio HAL.
+                    double weight=.12+.88*Math.sqrt(msc);
+                    re[k]=weight*rr/amp;im[k]=weight*ii/amp;
+                }
             }
             SpatialDsp.fft(re,im,true);
+            double coherence=cohWeighted/Math.max(cohTotal,1e-12);
             int lag=0;
             double peak=-Double.MAX_VALUE,second=0,energy=0;
+            int alternativeLag=0;
             for(int offset=-maxLag;offset<=maxLag;offset++){
                 double value=re[(offset+WINDOW)%WINDOW];
                 if(value>peak){peak=value;lag=offset;}
                 energy+=value*value;
             }
-            for(int offset=-maxLag;offset<=maxLag;offset++)
-                if(Math.abs(offset-lag)>2)
-                    second=Math.max(second,Math.abs(re[(offset+WINDOW)%WINDOW]));
+            for(int offset=-maxLag;offset<=maxLag;offset++){
+                if(Math.abs(offset-lag)<=3)continue;
+                double v=re[(offset+WINDOW)%WINDOW];
+                if(v>second){second=v;alternativeLag=offset;}
+            }
+            for(int offset=-maxLag+1;offset<maxLag;offset++){
+                double v=re[(offset+WINDOW)%WINDOW];
+                if(v>=.55*peak && v>re[(offset-1+WINDOW)%WINDOW] &&
+                   v>=re[(offset+1+WINDOW)%WINDOW])positivePeaks++;
+            }
             double bg=Math.sqrt(energy/(2*maxLag+1));
             double peakRatio=peak/Math.max(bg,1e-12);
             double contrast=Math.max(0,(peak-second)/Math.max(peak,1e-12));
@@ -194,10 +241,13 @@ public final class ContinuousTracker {
             String reason="OK";
             if(clipDetected)reason="CLIPPING";
             else if(Math.abs(lag)==maxLag)reason="BORDA_BUSCA";
+            else if(coherence<.12)reason="BAIXA_COHERENCIA";
             else if(peakRatio<(b==BANDS.length?2.4:2.05)||
                     contrast<(b==BANDS.length?.055:.045))reason="PICO_AMBIGUO";
             boolean valid=reason.equals("OK");
-            estimates[b]=new Band(name,delay,bandDb,peakRatio,contrast,valid,reason);
+            estimates[b]=new Band(name,delay,bandDb,peakRatio,contrast,valid,reason,
+                coherence,positivePeaks,
+                -alternativeLag*1e6/rate,second/Math.max(peak,1e-12));
             if(valid && b<BANDS.length){validCount++;candidates.add(delay);weights.add(
                 fraction*Math.max(1.0,Math.min(8,peakRatio)));}
         }

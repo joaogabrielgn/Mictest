@@ -85,6 +85,17 @@ public class ContinuousTrackerTest {
                 assertTrue(Double.isFinite(part.smoothedDelayUs));
         }
     }
+    @Test public void coherenceAndPeakDiagnosticsHaveValidRanges(){
+        List<ContinuousTracker.Window> windows=capture(syntheticStereo(48000,8,false));
+        for(ContinuousTracker.Window w:windows){
+            assertEquals(4,w.bands.length);
+            for(ContinuousTracker.Band b:w.bands){
+                assertTrue(b.spectralCoherence>=0 && b.spectralCoherence<=1.000001);
+                assertTrue(b.candidatePeaks>=0);
+                assertFalse(Double.isInfinite(b.alternatePeakRatio));
+            }
+        }
+    }
     @Test public void callbacksIncludeFrameCenteredTimestamps(){
         List<ContinuousTracker.Window> w=capture(syntheticStereo(16000,4,false));
         assertEquals(ContinuousTracker.WINDOW/2,w.get(0).centerFrame);

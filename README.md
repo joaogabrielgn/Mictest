@@ -1,34 +1,35 @@
-# Acoustic Direction Lab v0.4.1 — análise contínua com evidência graduada
+# Acoustic Direction Lab v0.4.2 — Coerência, movimento e direção no eixo
 
-Repositório: [joaogabrielgn/Mictest](https://github.com/joaogabrielgn/Mictest). Android; protótipo experimental para o Galaxy S25 (SM-S931B). **Sem IA**.
+Protótipo de pesquisa acústica sem IA, desenvolvido para o Galaxy S25 SM-S931B, Android 17. [Repositório Mictest](https://github.com/joaogabrielgn/Mictest).
 
-## Objetivo
+### Objetivo real
 
-Detectar atrasos intercanal de sons contínuos, como motores, chiados, ventiladores e voz, inclusive quando a energia se concentra em uma só faixa. Não precisa de estalos fora do modo de calibração. A v0.4 anterior produziu **0 MULTIBANDA_OK entre 4088 janelas** nas quatro gravações reais; os sinais tinham maior parte da energia em graves, com picos ambíguos nesse intervalo.
+Avaliar continuamente sons predominantes, incluindo chiados, motores, ventiladores, voz e ruído ambiente, **sem depender de estalos**. Com apenas dois canais de microfones internos PROCESSADOS e nenhum algoritmo de separação de fontes, ainda não é possível garantir qual fonte simultânea é a mais alta nem recuperar sua direção 3D de forma única.
 
-### Melhorias
+### Novidades v0.4.2
 
-- Mantém três bandas fixas do GCC-PHAT (180–950, 950–3000, 3000–8500 Hz) em janelas Hann de 4096 frames e avanço de 1024 frames a 48 kHz (85,3 ms e 21,3 ms).
-- Adiciona uma **quarta banda adaptativa** entre 250 e 8500 Hz, escolhida dinamicamente a partir da distribuição espectral com suporte mínimo de 1300 Hz. Ela pode fornecer um atraso candidato em cenas nas quais as bandas fixas não passam no filtro. **É uma estimativa sobreposta às bandas fixas e não é contada como evidência independente.**
-- Ajusta limiares de pico/contraste para bandas estreitas e mantém estados explícitos de rejeição (`SILENCIO`, `CLIPPING`, `PICO_AMBIGUO`, `TONAL_AMBIGUO`, `SEM_PICO_CONFIAVEL`).
-- Acrescenta o histórico `TemporalEvidence` para selecionar medições repetidas na região temporal de 4 segundos, exigindo pelo menos 12 janelas com atrasos próximos, 0,65 s transcorrido e dispersão robusta MAD <=25 µs. Como janelas se sobrepõem, **essas medições não são observações independentes**. Um som estável ou eco também pode ser sistematicamente errado.
-- Mostra níveis distintos: `CANDIDATO_UNICA_BANDA`, `TEMPORAL_ESTAVEL_BANDA_UNICA` (confiança temporal **parcial**) e `MULTIBANDA_OK` (duas faixas fixas com atrasos concordantes). Nenhum desses níveis significa confirmação de direção real, azimute, elevação ou precisão angular.
-- Exibe suavização somente com evidência multibanda ou temporalmente estável; não mantém seta/posição antiga em silêncio ou ambiguidade.
-- Exporta CSV com as quatro bandas, as fronteiras da banda adaptativa, status e métricas de suporte temporal.
-- Mantém modo `ESTALOS_CALIBRACAO`, WAV e CSV dos eventos, IMU e AudioTimestamp da v0.4.
+- **Coerência espectral intercanal estimada:** média exponencial de produtos cruzados de FFT e energias dos canais, calculando magnitude-squared coherence aproximada por frequência, e ponderando a correlação de fase por esta coerência. Janelas sucessivas de 85,3 ms se sobrepõem; a coerência *não* equivale a repetições independentes nem prova trajeto direto. Com rotação, o filtro espectral tem pequena memória e pode atrasar o pico.
+- **Picos alternativos:** para cada banda (180–950, 950–3000, 3000–8500 Hz e adaptativa), registra atraso principal, segundo pico, razão relativa e número de máximos locais relevantes. Sons tonais podem ter vários picos e permanecer ambíguos.
+- **Movimento físico do S25:** usa o quaternion interpolado na hora acústica da janela. Estima deslocamento angular aproximado nos últimos 600 ms e um **limite superior de variação de atraso** baseado na distância estimada entre os microfones (142,6 mm), velocidade do som ~343 m/s e margem de 45 µs. Status `PARADO`, `ROTACAO_PLAUSIVEL`, `ROTACAO_INCOMPATIVEL`, `SEM_DADO_SINCRONIZADO`. É uma regra de plausibilidade com processamento Samsung desconhecido, **não prova uma fonte fixa nem determina direção 3D**.
+- **Estabilidade corrigida:** a v0.4.1 chamava de `TEMPORAL_ESTAVEL` mesmo durante a rotação. A v0.4.2 só apresenta estabilidade na interface após o S25 ficar praticamente imóvel por >=700 ms e haver atrasos temporalmente estáveis. O CSV mantém a evidência original (`temporal_stable`) e registra `pose_adjusted_stable` para auditoria.
+- **Indicador visual 1D:** novo eixo horizontal com `Inferior — Centro — Superior`, usando o perfil-piloto de 14/10/2026 (−434,7 / −2,8 / +472,1 µs). Exibe marcador somente em janelas elegíveis; âmbar indica prévia durante movimento. Faixa ao redor reflete dispersão instrumental do atraso, não incerteza angular calibrada. Isso **não** é um overlay de câmera nem identifica lado da tela se o telefone foi virado.
+- **CSV contínuo expandido:** campos adicionais para movimento, velocidade angular, compatibilidade do atraso com a rotação, estabilidade com pose, quatro coerências e picos alternativos.
+- Modo `ESTALOS_CALIBRACAO` preservado. Sem IA, sem permissões novas e sem upload automático.
 
-### Como instalar pelo celular
+### Instalação
 
-Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions), entre no último run verde, baixe o artefato `AcousticDirectionLab-APK`, extraia `app-debug.apk` e instale. Se a assinatura debug impedir atualização, **exporte seus arquivos antigos** antes de desinstalar a versão anterior. Isso pode apagar os registros locais do app.
+Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions), escolha a última execução **verde**, baixe o artefato `AcousticDirectionLab-APK`, extraia `app-debug.apk` e instale. Se o Android impedir a atualização por chave de assinatura debug incompatível, **exporte os WAVs/CSVs antigos antes de desinstalar** (os arquivos privados podem ser apagados).
 
-### Como testar
+### Teste recomendado para esta versão
 
-Selecione `SOM_CONTINUO`, `CAMCORDER`, `2 canais`, `48000 Hz`. Celular na horizontal. O campo de referência `MIC_INFERIOR` ou `MIC_SUPERIOR` refere-se à extremidade física do aparelho (não a esquerda ou direita, que mudam ao rotacionar). Faça um teste em cada extremidade com um mesmo ventilador ou emissor de ruído contínuo, a 50–100 cm, por 20–30 segundos. Faça um terceiro no ponto médio, a cerca de 50 cm, e uma varredura com fonte imóvel por 30–40 segundos. Mantenha volume moderado sem clipping. Exporte `WAV + continuous CSV` por gravação e `IMU CSV` da varredura.
+Configure `SOM_CONTINUO` / `CAMCORDER` / `2 canais` / `48000 Hz` e S25 em paisagem.
 
-Compare a percentagem de janelas com atraso candidato, temporalmente estável e multibanda e, principalmente, os atrasos médios **em dados novos**. Apenas depois dessa validação devemos introduzir modelo geométrico 3D ou indicador sobre a câmera.
+1. Coloque um ventilador ou segundo celular emitindo ruído contínuo fixo a 0,5–1 m de **MIC_INFERIOR**, sem obstruir os microfones, e grave 20–30 s com S25 parado.
+2. Repita em **MIC_SUPERIOR** e **CENTRO**, em gravações separadas.
+3. Faça uma **varredura** de 30–40 s com **a fonte FIXA** e o S25 girando lentamente (não translade muito o telefone). Exporte WAV, `continuous CSV` e `IMU CSV`.
 
-### Limites conhecidos
+No CSV compare as medianas dos atrasos válidos em cada extremidade e o novo campo `pose_adjusted_stable`. Na varredura observe o campo `motion_status`: não interprete `ROTACAO_PLAUSIVEL` como localização espacial comprovada. A calibração por câmera e direção 3D exigirão pontos com ângulos conhecidos e validação fora do conjunto usado para calibrar.
 
-Os canais `CAMCORDER` do Galaxy S25 aparecem no Android como **processados**, com mapeamento físico dos canais não comprovado. Sons monocromáticos podem ser temporalmente estáveis e ainda ter atraso errado. Se houver vários sons simultâneos, o algoritmo não separa fontes nem garante localizar a mais alta. O modo contínuo é um estimador de atraso por janela, não uma câmera acústica ou DOA 3D validado.
+### Desenvolvimento
 
-O máximo de captura contínua é 120 segundos; modo de estalos, 30 segundos. Os sinais são salvos localmente, sem upload automático.
+Testes sintéticos cobrem silêncio, sinais tonais, atrasos negativos/positivos, coerência entre canais, quaternions, movimento rápido, limites físicos de plausibilidade e estabilidade temporal. CI compila APK debug após os testes.
