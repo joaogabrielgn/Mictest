@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.CAMERA" />
   <uses-feature android:name="android.hardware.microphone" android:required="true" />
+  <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
   <application android:label="Acoustic Direction Lab" android:allowBackup="false"
       android:theme="@android:style/Theme.Material.NoActionBar">
+    <meta-data android:name="com.google.ar.core" android:value="optional" />
+    <activity android:name=".ARCalibrationActivity"
+        android:screenOrientation="landscape" android:exported="false" />
     <activity android:name=".MainActivity" android:exported="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />

@@ -75,17 +75,23 @@ public final class WorldDirectionSolver {
     public void reset(){points.clear();lastPointNs=-1;}
     public int points(){return points.size();}
     public Result add(long timeNs,double[] quaternion,double delayUs,boolean accepted){
-        if(accepted&&timeNs>0&&Double.isFinite(delayUs)&&quaternion!=null&&
+        return addProjection(timeNs,quaternion,
+            EmpiricalAxis.estimate(delayUs).rawScore,accepted);
+    }
+    /**
+     * Directly measured 1D projection after an EXPLICIT audiovisual calibration.
+     * Reuses the same 3D observability and residual guards as pilot solver.
+     */
+    public Result addProjection(long timeNs,double[] quaternion,
+                                double projection,boolean accepted){
+        if(accepted&&timeNs>0&&Double.isFinite(projection)&&quaternion!=null&&
            quaternion.length==4&&
            (lastPointNs<0||timeNs-lastPointNs>=MIN_SPACING_NS)){
-            EmpiricalAxis.Axis score=EmpiricalAxis.estimate(delayUs);
-            // Read outside the literal end anchors with modest headroom; discard
-            // huge HAL artefacts instead of quietly clipping everything.
-            if(Double.isFinite(score.rawScore) && Math.abs(score.rawScore)<=1.15){
+            if(Math.abs(projection)<=1.15){
                 if(lastPointNs>timeNs)reset();
                 points.addLast(new Point(timeNs,
                     rotate(quaternion,DEVICE_BASELINE),
-                    Math.max(-1,Math.min(1,score.rawScore))));
+                    Math.max(-1,Math.min(1,projection))));
                 lastPointNs=timeNs;
             }
         }

@@ -8,8 +8,8 @@ android {
         applicationId 'com.acousticdirection.lab'
         minSdk 28
         targetSdk 35
-        versionCode 9
-        versionName '0.4.3'
+        versionCode 10
+        versionName '0.5.0'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -20,5 +20,6 @@ android {
  
 
 dependencies {
+    implementation 'com.google.ar:core:1.56.0'
     testImplementation 'junit:junit:4.13.2'
 }

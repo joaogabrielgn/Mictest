@@ -41,7 +41,7 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title(root, "ACOUSTIC DIRECTION LAB", 21, 0xFF62E0C3);
-        title(root, "Direção 1D + varredura 3D piloto / v0.4.3", 14, Color.LTGRAY);
+        title(root, "Câmera ARCore + calibração audiovisual / v0.5", 14, Color.LTGRAY);
         modeSpinner=selector(root,"Modo de análise",
             new String[]{"SOM_CONTINUO","ESTALOS_CALIBRACAO"},0);
         sourceSpinner = selector(root, "Fonte", sourceNames, 2);
@@ -53,6 +53,9 @@ public class MainActivity extends Activity {
         startButton = button(controls, "Iniciar", 0xFF00796B, () -> start());
         stopButton = button(controls, "Parar", 0xFF984348, () -> {running = false; stopButton.setEnabled(false);});
         stopButton.setEnabled(false);
+        LinearLayout arControls=row(root);
+        button(arControls,"Abrir calibração com câmera + ARCore",
+            0xFF00796B,()->startActivity(new Intent(this,ARCalibrationActivity.class)));
         LinearLayout scanControls=row(root);
         button(scanControls,"Reiniciar varredura 3D",0xFF34546A,()->{
             reset3dRequested=true;
@@ -93,7 +96,9 @@ public class MainActivity extends Activity {
         log.setTextColor(Color.WHITE); log.setTextSize(12);
         log.setTypeface(Typeface.MONOSPACE); log.setTextIsSelectable(true);
         root.addView(log);
-        writeLog("Acoustic Direction Lab v0.4.3");
+        writeLog("Acoustic Direction Lab v0.5");
+        writeLog("NOVO: calibre com a câmera traseira e ARCore; marque a fonte, gire e valide.");
+        writeLog("Calibração AR usa câmera própria do ARCore e áudio CAMCORDER simultâneo.");
         writeLog("Varredura 3D: estimativa experimental por TDOA+IMU com rejeição por cobertura e erro.");
         writeLog("3D requer FONTE PARADA, rotações em mais de um eixo e áudio processado estável.");
         writeLog("Direção visual: índice calibrado de microfones, SEM azimute, distância nem posição na câmera.");

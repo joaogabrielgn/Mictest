@@ -1,47 +1,50 @@
-# Acoustic Direction Lab v0.4.3 — espectro assimétrico + reconstrução 3D experimental
+# Acoustic Direction Lab v0.5 — Calibração audiovisual com ARCore
 
-Protótipo Android, sem IA. Desenvolvido com o Samsung Galaxy S25, modelo SM-S931B, em `CAMCORDER` estéreo 48 kHz. [Código no GitHub](https://github.com/joaogabrielgn/Mictest).
+Projeto experimental Android, desenvolvido com Samsung Galaxy S25 (SM-S931B), Android 17, sem inteligência artificial. [Código-fonte do Mictest](https://github.com/joaogabrielgn/Mictest).
 
-## Instalação no S25
+## O que chegou nesta versão
 
-Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions), selecione a execução concluída em verde mais recente, baixe `AcousticDirectionLab-APK`, extraia `app-debug.apk` e instale. Se a assinatura de depuração impedir atualizar, exporte os WAVs e CSVs antigos antes de desinstalar.
+A versão 0.5 mantém todas as funções de v0.4.3 (captura estéreo contínua, GCC-PHAT, IMU e hipótese 3D) e acrescenta o novo botão **Abrir calibração com câmera + ARCore**.
 
-## 1. Correção do lado do microfone inferior
+A tela AR usa o **ARCore como proprietário exclusivo da câmera traseira** e mostra a imagem através de textura OpenGL ES; não tenta abrir CameraX ao mesmo tempo. Possui:
 
-Os testes anteriores indicaram ~61% de janelas com marcador visível no microfone inferior contra ~97% na extremidade superior. Havia um veto único `flatness < 0,0015` mesmo para sinais com atraso repetível, além de saturação visual no índice-piloto abaixo de -1.
+1. **Marcação por toque na própria imagem.** Toque no objeto que está emitindo som. Quando ARCore detecta plano/ponto/depth apropriado, usa uma `AR_ANCHOR` e atualiza a direção da câmera para a fonte, mesmo durante pequenas translações. Se não houver interseção AR confiável, usa `DIRECAO_APENAS`: a direção óptica marcada persiste no espaço durante **rotações**, mas movimentos laterais de mais de ~15 cm tornam a aproximação inválida. O ponto marcado não é uma localização acústica estimada.
+2. **Captação simultânea.** Microfone em `CAMCORDER`, `2 canais`, `48000 Hz`. Processa todo o fluxo de áudio, incluindo motores, ventiladores e chiados, em janelas de 4096 frames com avanço de 1024 frames, sem depender de estalos.
+3. **Pares audiovisuais.** Para cada medição selecionada, registra TDOA (µs), timestamp acústico `BOOTTIME`, ARCore `BOOTTIME` obtido após a atualização do quadro, diferença temporal entre as duas leituras, direção do eixo físico dos microfones via `Frame.getAndroidSensorPose()` e direção da fonte marcada no mundo. Somente utiliza pares próximos no tempo e captura lenta (<28°/s), sem clipping, com alguma coerência espectral. **Importante:** ARCore e AudioRecord não estão hardware-sincronizados; esta é uma aproximação por relógio monotônico, válida apenas como protótipo. O atraso de câmera desconhecido, diferenças de processamento e rastreamento degradado podem enviesar a calibração.
+4. **Calibrador paramétrico robusto**, sem rede neural: ajusta `delay_us = offset + gain * dot(axis_world, source_direction_world)`. Exige >=24 medidas espacialmente variadas, faixa de projeção >=0,55 e desvio médio/ganho fisicamente plausíveis. Não transforma diretamente o ponto marcado em localização do som.
+5. **Validação realmente posterior ao ajuste.** O botão `Calibrar / Validar` congela o modelo, passando a gravar medidas novas que nunca atualizam o perfil. A validação calcula MAE de TDOA no conjunto novo e compara com um modelo de atraso constante. Se o erro estiver elevado, o app avisa em vez de declarar sucesso.
+6. **Reconstrução 3D experimental com parâmetros calibrados.** Após congelar o modelo, a nova varredura utiliza `(delay-offset)/gain` e vários eixos dos microfones orientados no mundo (ARCore) para reconstruir uma direção. Essa reconstrução é independente da marcação visual durante a inferência; o marcador entra depois apenas para calcular o **erro angular observacional**. Se não houver cobertura tridimensional ou resíduos aceitáveis, a solução é recusada. Mesmo um erro pequeno não prova generalização para outra fonte ou ambiente.
+7. **Exportação de um ZIP pelo Android** contendo WAV da última captura, CSV acústico/AR por janela, `calibration_pairs.csv` com fases `TRAIN` e `VALID`, e `metadata.txt`. O usuário escolhe a pasta pelo seletor Android. Nenhum upload automático.
 
-- A v0.4.3 avalia uma emissão muito tonal junto com **coerência entre canais, razão do pico e força de picos alternativos**. Uma banda fixa com coerência >=0,35, pico >=2,8, segundo pico <0,82 do principal e no máximo 4 máximos relevantes pode manter um atraso tonal como **candidato**, em vez de descartá-lo imediatamente.
-- **Não declara som tonal 3D ou ângulo correto apenas por repetibilidade.** O estado `TONAL_TEMPORAL_PROVISORIO` é só uma evidência temporal, que não prova que o pico escolhido seja o trajeto direto. Se os picos permanecem ambíguos, continua `TONAL_AMBIGUO`.
-- O indicador 1D exibe aproximadamente −1,18 a +1,18, com marcas fixas para −1 (microfone inferior) e +1 (superior). Pequenos excessos da calibração deixam de parecer travamentos na borda. Ainda é índice empírico, não ângulo.
+## Como instalar no S25
 
-## 2. Primeira reconstrução espacial 3D — EXPERIMENTAL
+Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions), toque na última execução verde e baixe o artefato `AcousticDirectionLab-APK`. Extraia `app-debug.apk` e instale. Se houver conflito de assinatura, exporte dados antigos antes de desinstalar. Para a nova calibração, conceda as permissões de **câmera e microfone** e tenha **Google Play Services para RA** instalado e atualizado. ARCore é opcional na configuração do aplicativo, então os testes acústicos continuam disponíveis sem RA.
 
-O novo `WorldDirectionSolver` transforma a linha de base física aproximada entre os dois microfones em um eixo orientado no mundo via quaternion de cada amostra IMU. Converte o atraso estéreo pelo **perfil-piloto empírico** para um índice de projeção relativo ao eixo. Ajusta uma direção estacionária por mínimos quadrados robustos (Huber) ao longo da varredura.
+## Protocolo recomendado — primeira calibração real
 
-**Hipóteses fortes:** fonte aproximadamente fixa durante toda a coleta; distância suficiente para um modelo direcional distante; orientação da bússola/sensor estável; relação aproximadamente linear entre índice calibrado e projeção acústica; rota de captação Samsung sem mudanças de atraso conforme o gesto. O Android declara canais `PROCESSED`; nenhuma dessas hipóteses foi validada na prática para reconstrução 3D.
+1. Use um segundo celular ou pequeno alto-falante reproduzindo **ruído rosa ou branco** a aproximadamente **1–2 metros**, em volume moderado, num ambiente silencioso. Preferir fonte estática, com banda larga; evitar estalos metálicos muito tonais.
+2. Abra **Calibração com câmera + ARCore**. A tela entra no modo paisagem. Espere ARCore informar rastreamento e visualizar a fonte.
+3. Toque diretamente sobre o objeto que produz o som. O marcador deve permanecer projetado durante rotações (e pode ir para a borda da imagem). Se o app mostrar `DIRECAO_APENAS`, não desloque lateralmente o S25: gire em torno do próprio centro.
+4. Toque **Iniciar áudio**. Faça 15–25 s de varredura bem lenta: esquerda/direita, acima/abaixo e rotação do eixo longitudinal. Não obstrua nenhum microfone. O calibrador exige variedade angular e pode rejeitar movimentos muito rápidos, pois o descompasso vídeo/áudio ainda não foi corrigido.
+5. Quando tiver amostras suficientes e a indicação do calibrador for plausível, toque **Calibrar / Validar**. Isso congela os coeficientes do perfil. Não reinicie a fonte, não a mova e não modifique o volume.
+6. **Continue ou recomece a captura de áudio** e execute uma nova sequência de giros e inclinações. Somente essa nova parte é usada como `VALID` e para tentativa de reconstrução 3D. Quando houver observabilidade suficiente, o aplicativo apresenta a direção reconstruída e a diferença angular em relação ao ponto marcado.
+7. Pare a gravação, toque **Exportar ZIP**, escolha uma pasta do Android e compartilhe o arquivo aqui.
 
-A interface inclui uma seção **Reconstrução 3D por rotação — experimental** com componentes angulares horizontais e verticais **relativos à direção óptica traseira do aparelho**, calculados nos eixos físicos do dispositivo; NÃO são coordenadas de pixels da câmera, não usam FOV/intrínsecos da lente e não são geolocalização. Não existe captura de câmera nem AR nesta versão.
+### Como interpretar
 
-Para que um resultado apareça, o algoritmo exige:
-- 20 ou mais amostras separadas temporalmente, com pelo menos 3 s de observações e histórico de até 45 s.
-- Eixos de microfone cobrindo pelo menos ~40° e condição tridimensional observável: autovalor mínimo/máximo da matriz de orientação >=0,022. Apenas giro horizontal em um plano deixa o problema degenerado e deve **recusar 3D**.
-- Norma do ajuste preliminar compatível com direção unitária (~0,55 a 1,42) e RMS residual na projeção <=0,18.
-- Dados de áudio não saturados, pico válido, pose sincronizada e movimento plausível. O sistema não tem garantia de separar múltiplas fontes e, portanto, pode rejeitar sons mistos ou produzir resultados fisicamente enviesados.
+- `AJUSTE_PILOTO`: os coeficientes tiveram dispersão plausível nos próprios dados de calibração. Não equivale a acurácia.
+- `VALIDACAO_TDOA_OK`: um conjunto **novo** previu bem a medição de atraso quando comparado a um modelo de atraso constante. É validação limitada à mesma fonte e ambiente.
+- `DIRECAO_3D_EXPERIMENTAL`: o modelo geométrico conseguiu ajustar uma direção após diversas rotações. Não significa automaticamente que o erro real seja baixo.
+- `Erro angular vs referência`: diferença entre a direção 3D acústica e a fonte que o usuário marcou. Somente aparece com direção geométrica disponível.
+- `SEM_DIVERSIDADE_GEOMETRICA`, `COLETANDO_MEDIDAS`, `GANHO_OU_ERRO_INCOMPATIVEL`: não force resultado; observe a cobertura e a qualidade dos sinais.
 
-Quando não há cobertura ou consistência suficiente, a interface mostra `COLETANDO_ROTACOES`, `VARREDURA_ANGULAR_INSUFICIENTE`, `EIXOS_NAO_COBREM_3D`, `AJUSTE_INCONSISTENTE`, entre outros. **Não transforma RMS em precisão angular.** Mesmo quando aparece `DIRECAO_3D_EXPERIMENTAL`, a direção ainda não é validada em graus.
+## Limitações que precisam ser resolvidas para produção
 
-O botão `Reiniciar varredura 3D` limpa as observações para começar com uma nova fonte. Todas as janelas continuam no `continuous CSV`, com status do solver, quantidade de dados, cobertura angular, condicionamento, erro, componentes 3D e ângulos derivados. Mantém os dados do IMU e WAV originais.
+1. **Sincronização câmera/áudio ainda aproximada:** ARCore entrega poses e frames processados; o timestamp BOOTTIME é tomado depois de `Session.update()`, enquanto AudioRecord usa hardware AudioTimestamp. Como fase de prova de conceito, rejeitamos poses distantes em tempo e movimentos rápidos. Para máxima precisão precisaremos medir o offset de câmera e áudio e sincronizar/reinterpolar as poses pela exposição real.
+2. **Calibração exclusiva do aparelho e rota de captura:** canais CAMCORDER são processados pela Samsung; rota, AGC, supressão de ruído, orientação e tipo de som podem afetar os atrasos.
+3. **Uma única fonte:** não existe ainda separação confiável de várias fontes simultâneas nem identificação da fonte mais alta por intensidade.
+4. **Bússola/orientação e AR relocalização:** mudanças de pose ARCore podem afetar a direção. Ponto com fallback direcional só vale aproximadamente em rotações sem translação.
+5. **Âncora por hit-test:** ARCore pode rastrear um plano próximo que não corresponde à superfície física exata do alto-falante; a posição precisa da fonte ainda é desconhecida.
+6. **Câmera posterior e geometria:** não há projeção acústica AR sem marcação, calibração de FOV personalizada, nem visualização de várias fontes no quadro. O marcador verde mostra a referência MANUAL, não o resultado inferido pelo microfone. A direção acústica calculada aparece numericamente apenas durante a validação.
 
-## 3. Teste recomendado
-
-Use `SOM_CONTINUO` / `CAMCORDER` / `2 canais` / `48000 Hz`.
-
-1. **Teste estacionário:** 15–20 segundos cada: MIC_INFERIOR, MIC_SUPERIOR e CENTRO. Fonte contínua moderada e S25 apoiado horizontalmente. O indicador 1D deve ficar visível com maior frequência no inferior em comparação à v0.4.2, mas sempre marcar ambiguidade tonal quando apropriado.
-2. **Teste 3D:** deixe uma fonte contínua única, fixa a 1–2 m (preferencialmente ruído rosa/branco em outro aparelho). Gire o S25 lentamente **para esquerda e direita** e também **incline para cima/baixo e role o eixo longitudinal**, mantendo aproximadamente o mesmo centro espacial, por 25–40 segundos. Se só girar na horizontal, a reconstrução 3D deverá ser recusada por geometria insuficiente.
-3. Repita a varredura com a fonte em outra posição conhecida e verifique se a indicação angular muda coerentemente. A maior prioridade é rejeitar falsas soluções, não apresentar qualquer ponto a todo custo.
-
-Exporte WAV + `continuous CSV` de cada teste e IMU CSV das varreduras. Compare o desempenho com a v0.4.2. A v0.4.3 ainda não identifica qual de dois sons simultâneos é o mais forte, não calcula distância e não projeta no vídeo.
-
-## Limitações do protótipo
-
-A inversão de atrasos no eixo foi reproduzida em testes anteriores, mas o canal processado não é comprovadamente equivalente a um atraso acústico geométrico puro. A reconstrução 3D utiliza uma aproximação que pode falhar em locais reverberantes, com fonogramas tonais, múltiplas fontes ou variações de orientação. Sem teste de erro com referência angular independente, toda a direção 3D deve ser tratada como **hipótese de engenharia**, não medição validada.
+Testes automatizados validam ajustes de offset/ganho robustos, rejeição de calibrações degeneradas, validação independente, relógios de pose e geometria de projeção sintética. A primeira execução no S25 será o teste indispensável do ARCore e da concorrência da câmera com a gravação CAMCORDER.
