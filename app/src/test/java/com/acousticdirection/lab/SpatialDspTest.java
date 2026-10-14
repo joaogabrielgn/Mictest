@@ -1,0 +1,57 @@
+package com.acousticdirection.lab;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import java.util.Random;
+
+public class SpatialDspTest {
+    private static final int N = 2048;
+    private double[] randomNoise(long seed) {
+        Random random = new Random(seed);
+        double[] a = new double[N];
+        for(int i=0; i<N; i++) a[i] = 0.10*random.nextGaussian();
+        return a;
+    }
+    private double rms(double[] a) {
+        double sum=0;
+        for(double value:a)sum+=value*value;
+        return Math.sqrt(sum/a.length);
+    }
+    private double[] delayed(double[] input, int samples) {
+        double[] b=new double[N];
+        for(int i=0;i<N;i++){
+            int j=i-samples;
+            b[i] = (j>=0 && j<N) ? input[j] : 0;
+        }
+        return b;
+    }
+    @Test public void detectsPositiveDelay() {
+        double[] a=randomNoise(31), b=delayed(a,8);
+        SpatialDsp.Estimate e=SpatialDsp.estimatePair(a,b,rms(a),rms(b),0,1,48000,26);
+        assertEquals(8.0,e.delaySamples,0.6);
+        assertTrue(e.peak>2.0);
+    }
+    @Test public void detectsNegativeDelay() {
+        double[] a=randomNoise(32), b=delayed(a,-11);
+        SpatialDsp.Estimate e=SpatialDsp.estimatePair(a,b,rms(a),rms(b),0,1,48000,26);
+        assertEquals(-11.0,e.delaySamples,0.6);
+    }
+    @Test public void silenceIsRejected() {
+        double[] a = new double[N];
+        SpatialDsp.Estimate e=SpatialDsp.estimatePair(a,a,0,0,0,1,48000,26);
+        assertFalse(e.valid);
+        assertEquals("SINAL_FRACO",e.reason);
+    }
+    @Test public void duplicateChannelsAreRejected() {
+        double[] a=randomNoise(33);
+        SpatialDsp.Estimate e=SpatialDsp.estimatePair(a,a,rms(a),rms(a),0,1,48000,26);
+        assertFalse(e.valid);
+        assertEquals("CANAIS_SIMILARES",e.reason);
+    }
+    @Test public void clippingIsRejected() {
+        double[] a=randomNoise(34),b=delayed(a,4);
+        SpatialDsp.Estimate e=SpatialDsp.estimatePair(a,b,rms(a),rms(b),.4,1,48000,26);
+        assertFalse(e.valid);
+        assertEquals("CLIPPING",e.reason);
+    }
+}
