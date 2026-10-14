@@ -42,6 +42,19 @@ public final class SpatialDsp {
         }
     }
 
+    /**
+     * For a transient at about frame 256 in the detector window, emphasize the
+     * first ~16 ms after the onset, reducing the impact of late reverberation.
+     * Retain the same FFT size and the same 2048 frame PCM layout.
+     */
+    public static Estimate[] analyzeEarly(short[] pcm, int count, int channels, int rate) {
+        if (channels < 2 || count < FFT_N * channels) return new Estimate[0];
+        short[] early = new short[FFT_N * channels];
+        int keep = 1024; // ~21ms total, including ~5ms pre-trigger, at 48kHz
+        System.arraycopy(pcm,0,early,0,keep*channels);
+        return analyze(early,early.length,channels,rate);
+    }
+
     /** Choose the strongest 2048-frame part of the current read; estimate C0 vs C1... */
     public static Estimate[] analyze(short[] interleaved, int count, int channels, int rate) {
         if (channels < 2 || rate <= 0 || count / channels < FFT_N) return new Estimate[0];
@@ -70,7 +83,7 @@ public final class SpatialDsp {
                 double v = interleaved[origin + i*channels + ch] / 32768.0;
                 samples[ch][i] = v;
                 power += v * v;
-                if (Math.abs(v) >= .985) clipped++;
+                if (Math.abs(v) >= .995) clipped++;
             }
             rms[ch] = Math.sqrt(power / FFT_N);
             clip[ch] = clipped / FFT_N;
@@ -96,7 +109,11 @@ public final class SpatialDsp {
         double previousA = 0, previousB = 0;
         for (int i = 0; i < FFT_N; i++) {
             double va = a[i] - meanA, vb = b[i] - meanB;
-            double h = 0.5 - 0.5*Math.cos(2*Math.PI*i/(FFT_N-1));
+            // A flat-top window preserves early transients at frame ~256; the
+            // old Hann window strongly attenuated that region (~14% amplitude).
+            double h = i<128 ? 0.5-0.5*Math.cos(Math.PI*i/128.0)
+                 : i>=FFT_N-128 ? 0.5-0.5*Math.cos(Math.PI*(FFT_N-1-i)/127.0)
+                 : 1.0;
             ar[i] = (va - 0.96*previousA)*h;
             br[i] = (vb - 0.96*previousB)*h;
             previousA = va; previousB = vb;
@@ -154,11 +171,18 @@ public final class SpatialDsp {
             Math.max(Math.max(rmsA,rmsB),1e-10);
         String reason="OK";
         if (rmsA < .0008 || rmsB < .0008) reason="SINAL_FRACO";
-        else if (clip > .01) reason="CLIPPING";
+        else if (clip > 0.0) reason="CLIPPING";
         else if (normalizedDifference < .015) reason="CANAIS_SIMILARES";
         else if (bestLag == -maxLag || bestLag == maxLag) reason="LIMITE_GEOMETRICO";
         else if (peak < 2.2 || contrast < .09) reason="PICO_AMBIGUO";
         double lag = -(bestLag + subSample);
+        // The physical constraint is applied to the measured lag, not just the FFT search range.
+        // Allow 1.25 samples of tolerance for interpolation / rate quantization. This is
+        // provisional until the Samsung processed-channel fixed offset is calibrated.
+        double physicalUs = DEFAULT_SPACING_METERS / SOUND_SPEED_M_S * 1.0e6;
+        double measuredUs = Math.abs(lag * 1.0e6 / rate);
+        if ("OK".equals(reason) && measuredUs > physicalUs + 1.25e6/rate)
+            reason = "FORA_LIMITE_FISICO";
         return new Estimate(channel, lag, lag * 1e6 / rate,
             20*Math.log10(Math.max(rmsA,1e-10)),20*Math.log10(Math.max(rmsB,1e-10)),
             peak, contrast, clip, normalizedDifference, "OK".equals(reason), reason);

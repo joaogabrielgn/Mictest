@@ -37,13 +37,13 @@ public final class EventDetector {
     private long processed=0, lastTrigger=-99999999;
     private double background=0.0003, sumDiff=0;
     private int blockCount=0;
-    private int detected=0, emitted=0, overflow=0;
+    private int detected=0, emitted=0, overflow=0, suppressed=0;
 
     public EventDetector(int channels, int sampleRate) {
         if(channels<1 || channels>4 || sampleRate<8000) throw new IllegalArgumentException("Invalid audio layout");
         this.channels=channels;this.sampleRate=sampleRate;
         ring=new short[RING_FRAMES*channels];previous=new short[channels];
-        refractoryFrames=Math.max(1, (int)(sampleRate*.14));
+        refractoryFrames=Math.max(1, (int)(sampleRate*.35));
     }
 
     public void feed(short[] data,int count,Listener listener) {
@@ -66,10 +66,10 @@ public final class EventDetector {
                 double noise=Math.max(background,0.00015);
                 double ratio=mean/noise;
                 // Gate against faint thermal noise; insist on sharp onset rather than periodic low-amplitude hiss.
-                boolean hit = mean>0.0030 && ratio>5.0
-                    && processed>PRE+BLOCK
-                    && processed-lastTrigger>refractoryFrames
-                    && pending.size()<12;
+                boolean strongTransient = mean>0.0030 && ratio>5.0 && processed>PRE+BLOCK;
+                boolean cooldown = processed-lastTrigger<=refractoryFrames;
+                if(strongTransient && cooldown) suppressed++;
+                boolean hit = strongTransient && !cooldown && pending.size()<12;
                 if(hit) {
                     long onset=processed-(BLOCK/2);
                     pending.addLast(new Pending(onset,ratio));
@@ -100,4 +100,6 @@ public final class EventDetector {
     public int emittedCount(){return emitted;}
     public int overflowCount(){return overflow;}
     public int pendingCount(){return pending.size();}
+    /** Number of transient-analysis blocks blocked by 350 ms refractory; not events. */
+    public int suppressedBlocks(){return suppressed;}
 }

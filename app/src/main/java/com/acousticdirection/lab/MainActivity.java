@@ -39,7 +39,7 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title(root, "ACOUSTIC DIRECTION LAB", 21, 0xFF62E0C3);
-        title(root, "Eventos + timestamps + IMU / v0.3", 14, Color.LTGRAY);
+        title(root, "Eventos robustos + IMU / v0.3.1", 14, Color.LTGRAY);
         sourceSpinner = selector(root, "Fonte", sourceNames, 2);
         channelSpinner = selector(root, "Número de canais", new String[]{"1 canal", "2 canais", "3 canais", "4 canais"}, 1);
         rateSpinner = selector(root, "Frequência", new String[]{"48000 Hz", "96000 Hz", "44100 Hz"}, 0);
@@ -69,7 +69,7 @@ public class MainActivity extends Activity {
         log.setTextColor(Color.WHITE); log.setTextSize(12);
         log.setTypeface(Typeface.MONOSPACE); log.setTextIsSelectable(true);
         root.addView(log);
-        writeLog("Acoustic Direction Lab v0.3");
+        writeLog("Acoustic Direction Lab v0.3.1");
         writeLog("Eventos analisados individualmente; timestamp audio BOOTTIME; pose IMU interpolada.");
         writeLog("Leituras de GCC-PHAT são hipóteses, não direções calibradas.");
         writeLog(motion.inventory());
@@ -166,7 +166,7 @@ public class MainActivity extends Activity {
         WavWriter wav = null;
         BufferedWriter csvOut = null, imuOut = null;
         long frames = 0;
-        final int[] processedEvents = {0}, candidates = {0}, syncedEvents = {0};
+        final int[] processedEvents = {0}, candidates = {0}, syncedEvents = {0}, robustCount = {0};
         EventDetector detector = null;
         AudioClock clock = null;
         try {
@@ -188,6 +188,8 @@ public class MainActivity extends Activity {
             detector = new EventDetector(actualChannels,actualRate);
             clock = new AudioClock(actualRate);
             final AudioClock audioClock = clock;
+            final DelayStability[] stability=new DelayStability[Math.max(0,actualChannels-1)];
+            for(int i=0;i<stability.length;i++)stability[i]=new DelayStability();
             writeLog("\n=== TESTE: " + sourceNames[sourceIndex] + ", pedido="
                 + channelCount + "ch / " + rate + "Hz ===");
             writeLog("Captura resultante: " + actualChannels + "ch / " + actualRate
@@ -208,9 +210,10 @@ public class MainActivity extends Activity {
             lastWav=wavFile;lastCsv=csvFile;lastImu=imuFile;
             final BufferedWriter eventOutput=csvOut;
             final BufferedWriter motionOutput=imuOut;
-            csvOut.write("onset_frame,window_start_frame,audio_boottime_ns,audio_time_status,anchor_frame,anchor_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,trigger_ratio,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg\n");
+            csvOut.write("onset_frame,window_start_frame,audio_boottime_ns,audio_time_status,anchor_frame,anchor_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,trigger_ratio,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,first_rise_C0_sample,first_rise_B_sample,first_rise_delay_us,first_rise_status,full_window_delay_us,early_full_delta_us,stable_neighbors,stable_median_us,stable_mad_us,robust_candidate,robust_reason\n");
             imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\n");
-            writeLog("v0.3 salva WAV + CSV de EVENTOS + CSV de IMU.");
+            writeLog("v0.3.1: bloqueio de ecos, início acústico e estabilidade por orientação.");
+            writeLog("QUALIFICADO = filtros heurísticos; NÃO equivale a direção correta.");
             writeLog("Atraso positivo: C1 chega depois de C0; não há azimute calibrado.");
             ar.startRecording();
             if (ar.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
@@ -243,18 +246,44 @@ public class MainActivity extends Activity {
                     AudioClock.Mapping mapping=audioClock.timeForFrame(event.onsetFrame);
                     PoseHistory.Pose pose=mapping.valid ?
                         motion.poseAt(mapping.timeNs) : motion.poseAt(-1);
-                    SpatialDsp.Estimate[] estimates=
+                    SpatialDsp.Estimate[] early =
+                        SpatialDsp.analyzeEarly(event.pcm,event.pcm.length,actualChannels,actualRate);
+                    SpatialDsp.Estimate[] full =
                         SpatialDsp.analyze(event.pcm,event.pcm.length,actualChannels,actualRate);
                     processedEvents[0]++;
                     if(mapping.valid && pose.valid)syncedEvents[0]++;
-                    StringBuilder details = new StringBuilder();
-                    details.append("Evento ").append(processedEvents[0]).append(" | ")
+                    StringBuilder details=new StringBuilder();
+                    details.append("Estalo ").append(processedEvents[0]).append(" | ")
                         .append(mapping.status).append(" | ").append(pose.quality).append('\n');
-                    for(SpatialDsp.Estimate est:estimates) {
+                    for(int k=0;k<early.length;k++){
+                        SpatialDsp.Estimate est=early[k], all=full[k];
                         if(est.valid)candidates[0]++;
-                        try {
+                        OnsetInspector.Pair first=OnsetInspector.examine(
+                            event.pcm,actualChannels,est.channel,actualRate);
+                        double windowDelta=Math.abs(est.delayUs-all.delayUs);
+                        boolean windowAgree=Double.isFinite(windowDelta) && windowDelta<=125.0;
+                        boolean firstAgree=first.usable() &&
+                            Math.abs(first.delayUs-est.delayUs)<=150.0;
+                        boolean clean=est.valid && all.clippingFraction==0 &&
+                            windowAgree && firstAgree && mapping.valid && pose.valid;
+                        DelayStability.Stats st=stability[k].observe(
+                            mapping.valid?mapping.timeNs:-1,pose,est.delayUs,clean);
+                        boolean robust=clean && !st.outlier;
+                        String robustReason;
+                        if(!est.valid)robustReason=est.reason;
+                        else if(all.clippingFraction>0)robustReason="CLIPPING";
+                        else if(!windowAgree)robustReason="JANELAS_DIVERGEM";
+                        else if(!first.usable())robustReason=first.quality;
+                        else if(!firstAgree)robustReason="INICIO_DIVERGE";
+                        else if(!mapping.valid)robustReason="SEM_TIMESTAMP";
+                        else if(!pose.valid)robustReason=pose.quality;
+                        else if(st.outlier)robustReason="DISPERSAO_ELEVADA";
+                        else robustReason="OK";
+                        if(robust)robustCount[0]++;
+                        try{
+                            // Preserve v0.3 columns, append v0.3.1 diagnostics.
                             eventOutput.write(String.format(Locale.US,
-                                "%d,%d,%d,%s,%d,%d,%d,%.5f,%.4f,%.5f,%.5f,%.3f,%.3f,%.7f,%.5f,%d,%s,%.2f,%s,%d,%.8f,%.8f,%.8f,%.8f,%.3f,%.3f,%.3f\n",
+                                "%d,%d,%d,%s,%d,%d,%d,%.5f,%.4f,%.5f,%.5f,%.3f,%.3f,%.7f,%.5f,%d,%s,%.2f,%s,%d,%.8f,%.8f,%.8f,%.8f,%.3f,%.3f,%.3f",
                                 event.onsetFrame,event.windowStartFrame,
                                 mapping.valid?mapping.timeNs:-1,mapping.status,
                                 audioClock.anchorFrame(),audioClock.anchorTimeNs(),
@@ -263,8 +292,16 @@ public class MainActivity extends Activity {
                                 est.difference,est.valid?1:0,est.reason,event.triggerRatio,
                                 pose.quality,pose.timeNs,pose.q[0],pose.q[1],pose.q[2],pose.q[3],
                                 pose.yaw,pose.pitch,pose.roll));
-                        } catch(IOException e) {throw new IllegalStateException("CSV de evento: "+e.getMessage(),e);}
-                        details.append(est.display()).append('\n');
+                            eventOutput.write(String.format(Locale.US,
+                                ",%d,%d,%.4f,%s,%.4f,%.4f,%d,%.4f,%.4f,%d,%s\n",
+                                first.onset0,first.onsetB,first.delayUs,first.quality,
+                                all.delayUs,windowDelta,st.count,st.medianUs,st.madUs,
+                                robust?1:0,robustReason));
+                        }catch(IOException e){throw new IllegalStateException("Falha CSV: "+e.getMessage(),e);}
+                        details.append(String.format(Locale.US,
+                            "%+.1f us | %s | reps=%d MAD=%.1f us\n",
+                            est.delayUs,robust?"QUALIFICADO":robustReason,
+                            st.count,st.madUs));
                     }
                     final String screen=details.toString();
                     runOnUiThread(() -> live.setText(screen));
@@ -277,8 +314,8 @@ public class MainActivity extends Activity {
                     lastUi=nowBoot;
                     long seconds=frames/actualRate;
                     final String status=String.format(Locale.US,
-                        "t=%ds: %d estalos detectados, %d candidatos, %d pareados com IMU | AudioTimestamp OK=%d, rejeitado=%d",
-                        seconds,processedEvents[0],candidates[0],syncedEvents[0],
+                        "t=%ds: %d eventos, %d GCC candidatos, %d robustos, %d IMU | Timestamp OK=%d, rejeitado=%d",
+                        seconds,processedEvents[0],candidates[0],robustCount[0],syncedEvents[0],
                         audioClock.accepted(),audioClock.rejected());
                     writeLog(status);
                 }
@@ -286,7 +323,7 @@ public class MainActivity extends Activity {
             writeLog("Gravados "+frames+" frames; "+wavFile.getName());
             writeLog("Estalos detectados="+detector.detectedCount()+", analisados="
                 +processedEvents[0]+", descartados por fila="+detector.overflowCount()
-                +", janelas DSP candidatas="+candidates[0]+", sincronizados IMU="+syncedEvents[0]);
+                +", GCC candidatos="+candidates[0]+", robustos="+robustCount[0]+", sincronizados IMU="+syncedEvents[0]+", blocos de eco suprimidos="+detector.suppressedBlocks());
             writeLog("AudioTimestamp aceitos="+clock.accepted()+", rejeitados="
                 +clock.rejected()+"; ausências também podem ocorrer.");
             writeLog("Arquivos: "+csvFile.getName()+" e "+imuFile.getName());

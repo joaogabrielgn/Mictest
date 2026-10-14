@@ -48,6 +48,20 @@ public class SpatialDspTest {
         assertFalse(e.valid);
         assertEquals("CANAIS_SIMILARES",e.reason);
     }
+    @Test public void shortSinglePeakIsFlaggedAsClipping() {
+        double[] a=randomNoise(41), b=delayed(a,5);
+        SpatialDsp.Estimate result=SpatialDsp.estimatePair(a,b,rms(a),rms(b),
+            1.0/N,1,48000,26);
+        assertFalse(result.valid);
+        assertEquals("CLIPPING",result.reason);
+    }
+    @Test public void excessiveDelayIsNotAcceptedEvenWithinFftSearch() {
+        double[] a=randomNoise(42),b=delayed(a,24);
+        SpatialDsp.Estimate result=SpatialDsp.estimatePair(a,b,rms(a),rms(b),
+            0,1,48000,26);
+        assertFalse(result.valid);
+        assertEquals("FORA_LIMITE_FISICO",result.reason);
+    }
     @Test public void clippingIsRejected() {
         double[] a=randomNoise(34),b=delayed(a,4);
         SpatialDsp.Estimate e=SpatialDsp.estimatePair(a,b,rms(a),rms(b),.4,1,48000,26);
