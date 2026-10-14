@@ -24,11 +24,13 @@ public class MainActivity extends Activity {
     private AudioManager manager;
     private volatile boolean running = false;
     private volatile AudioRecord current;
-    private File lastWav;
+    private File lastWav, lastCsv, lastImu;
+    private MotionTracker motion;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         manager = (AudioManager)getSystemService(Context.AUDIO_SERVICE);
+        motion = new MotionTracker(this);
         ScrollView scroller = new ScrollView(this);
         scroller.setBackgroundColor(Color.rgb(12, 24, 36));
         LinearLayout root = new LinearLayout(this);
@@ -37,8 +39,8 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title(root, "ACOUSTIC DIRECTION LAB", 21, 0xFF62E0C3);
-        title(root, "Diagnóstico de microfones / v0.1", 14, Color.LTGRAY);
-        sourceSpinner = selector(root, "Fonte", sourceNames, 0);
+        title(root, "GCC-PHAT experimental + IMU / v0.2", 14, Color.LTGRAY);
+        sourceSpinner = selector(root, "Fonte", sourceNames, 2);
         channelSpinner = selector(root, "Número de canais", new String[]{"1 canal", "2 canais", "3 canais", "4 canais"}, 1);
         rateSpinner = selector(root, "Frequência", new String[]{"48000 Hz", "96000 Hz", "44100 Hz"}, 0);
         LinearLayout controls = row(root);
@@ -51,7 +53,10 @@ public class MainActivity extends Activity {
         LinearLayout exports = row(root);
         button(exports, "Exportar TXT", 0xFF34546A, () -> export(101));
         button(exports, "Exportar WAV", 0xFF34546A, () -> export(102));
-        title(root, "Análise preliminar", 17, Color.WHITE);
+        LinearLayout datasets = row(root);
+        button(datasets, "Exportar análise CSV", 0xFF34546A, () -> export(103));
+        button(datasets, "Exportar IMU CSV", 0xFF34546A, () -> export(104));
+        title(root, "TDOA / GCC-PHAT (experimental)", 17, Color.WHITE);
         live = new TextView(this);
         live.setTextColor(0xFF9BF0DF); live.setTextSize(13);
         live.setTypeface(Typeface.MONOSPACE);
@@ -64,7 +69,9 @@ public class MainActivity extends Activity {
         log.setTextColor(Color.WHITE); log.setTextSize(12);
         log.setTypeface(Typeface.MONOSPACE); log.setTextIsSelectable(true);
         root.addView(log);
-        writeLog("Acoustic Direction Lab v0.1");
+        writeLog("Acoustic Direction Lab v0.2");
+        writeLog("Leituras de GCC-PHAT são hipóteses, não direções calibradas.");
+        writeLog(motion.inventory());
         writeLog("Modelo: " + Build.MANUFACTURER + " " + Build.MODEL
             + " | Android " + Build.VERSION.RELEASE);
         if (!hasPermission()) requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 10);
@@ -149,13 +156,16 @@ public class MainActivity extends Activity {
         final int channels = channelSpinner.getSelectedItemPosition() + 1;
         final int rate = rates[rateSpinner.getSelectedItemPosition()];
         running = true; startButton.setEnabled(false); stopButton.setEnabled(true);
+        motion.start();
         new Thread(() -> record(sourceIndex, channels, rate), "CapturePCM").start();
     }
     private void record(int sourceIndex, int channelCount, int rate) {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         AudioRecord ar = null;
         WavWriter wav = null;
+        BufferedWriter csvOut = null, imuOut = null;
         long frames = 0;
+        int assessed = 0, valid = 0;
         try {
             AudioFormat.Builder b = new AudioFormat.Builder().setSampleRate(rate)
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT);
@@ -181,6 +191,14 @@ public class MainActivity extends Activity {
             lastWav = new File(dir, "mic_" + timestamp + "_" + sourceNames[sourceIndex]
                 + "_" + actualChannels + "ch.wav");
             wav = new WavWriter(lastWav, actualChannels, actualRate);
+            lastCsv = new File(dir, "analysis_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
+            lastImu = new File(dir, "imu_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
+            csvOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(lastCsv), "UTF-8"));
+            imuOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(lastImu), "UTF-8"));
+            csvOut.write("frames_completed,read_complete_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,last_orientation_sensor_ns,yaw_deg,pitch_deg,roll_deg\\n");
+            imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\\n");
+            writeLog("CSV de análise e eventos IMU serão salvos com o WAV.");
+            writeLog("IMPORTANTE: tempo da leitura do áudio é aproximado, não timestamp exato do sample.");
             ar.startRecording();
             if (ar.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
                 throw new IOException("Gravação não iniciou");
@@ -193,7 +211,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
             short[] audio = new short[4096 * actualChannels];
             long began = System.nanoTime(), updated = 0;
-            while (running && System.nanoTime() - began < 15_000_000_000L) {
+            while (running && System.nanoTime() - began < 30_000_000_000L) {
                 int n = ar.read(audio, 0, audio.length, AudioRecord.READ_BLOCKING);
                 if (n < 0) throw new IOException("AudioRecord.read = " + n);
                 n -= n % actualChannels;
@@ -201,26 +219,61 @@ public class MainActivity extends Activity {
                 wav.write(audio, n);
                 frames += n / actualChannels;
                 long now = System.nanoTime();
-                if (now - updated > 300_000_000L) {
+                if (now - updated > 250_000_000L) {
                     updated = now;
-                    final String text = String.format(Locale.US,
-                        "%.1f s, %d canais, %d Hz\n", frames / (double)actualRate,
-                        actualChannels, actualRate)
-                        + AudioAnalysis.inspect(audio, n, actualChannels, actualRate);
-                    runOnUiThread(() -> live.setText(text));
+                    long readCompleteBootNs = android.os.SystemClock.elapsedRealtimeNanos();
+                    MotionTracker.Snapshot orientation = motion.snapshot();
+                    SpatialDsp.Estimate[] estimates =
+                        SpatialDsp.analyze(audio, n, actualChannels, actualRate);
+                    StringBuilder shown = new StringBuilder(String.format(Locale.US,
+                        "%.1f s | %d ch | %d Hz\\n", frames/(double)actualRate,
+                        actualChannels,actualRate));
+                    shown.append(String.format(Locale.US,
+                        "IMU yaw %+.1f | pitch %+.1f | roll %+.1f graus\\n",
+                        orientation.yaw, orientation.pitch, orientation.roll));
+                    shown.append("Delay: positivo = canal B chega depois de C0\\n");
+                    for (SpatialDsp.Estimate estimate : estimates) {
+                        shown.append(estimate.display()).append('\\n');
+                        csvOut.write(estimate.csv(frames,readCompleteBootNs,orientation));
+                        csvOut.newLine();
+                        assessed++;
+                        if(estimate.valid) valid++;
+                    }
+                    if (estimates.length == 0) shown.append("Requer pelo menos 2 canais.\\n");
+                    String imuLine;
+                    while ((imuLine = motion.pollLine()) != null) {
+                        imuOut.write(imuLine);
+                        imuOut.newLine();
+                    }
+                    final String result = shown.toString();
+                    runOnUiThread(() -> live.setText(result));
                 }
             }
             writeLog("Gravados " + frames + " frames; arquivo " + lastWav.getName());
+            writeLog("Janelas avaliadas: " + assessed + "; candidatos: " + valid
+                + " (heurística, não porcentagem de acerto).");
+            writeLog("CSV: " + lastCsv.getName() + "; IMU: " + lastImu.getName());
         } catch (Exception e) {
             writeLog("ERRO de captura: " + e);
             runOnUiThread(() -> live.setText("Falha: " + e.getMessage()));
         } finally {
             running = false;
+            motion.stop();
             if (ar != null) {
                 try { ar.stop(); } catch (Exception ignored) {}
                 ar.release();
             }
             current = null;
+            if (imuOut != null) {
+                try {
+                    String imuLine;
+                    while ((imuLine = motion.pollLine()) != null) {
+                        imuOut.write(imuLine); imuOut.newLine();
+                    }
+                } catch(Exception ignored) {}
+            }
+            if (csvOut != null) try { csvOut.close(); } catch(Exception ignored) {}
+            if (imuOut != null) try { imuOut.close(); } catch(Exception ignored) {}
             if (wav != null) try { wav.close(); } catch (Exception e) { writeLog("Falha WAV: " + e); }
             runOnUiThread(() -> {
                 startButton.setEnabled(true); stopButton.setEnabled(false);
@@ -235,13 +288,15 @@ public class MainActivity extends Activity {
     }
     private void export(int what) {
         if (running) { Toast.makeText(this, "Pare a gravação antes de exportar.", Toast.LENGTH_SHORT).show(); return; }
-        if (what == 102 && lastWav == null) {
+        if ((what == 102 && lastWav == null) || (what == 103 && lastCsv == null) || (what == 104 && lastImu == null)) {
             Toast.makeText(this, "Grave áudio antes de exportar WAV.", Toast.LENGTH_LONG).show(); return;
         }
         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType(what == 101 ? "text/plain" : "audio/wav");
-        i.putExtra(Intent.EXTRA_TITLE, what == 101 ? "diagnostico_s25.txt" : lastWav.getName());
+        i.setType(what == 102 ? "audio/wav" : what == 101 ? "text/plain" : "text/csv");
+        String filename = what == 101 ? "diagnostico_s25.txt" :
+            what == 102 ? lastWav.getName() : what == 103 ? lastCsv.getName() : lastImu.getName();
+        i.putExtra(Intent.EXTRA_TITLE, filename);
         startActivityForResult(i, what);
     }
     @Override protected void onActivityResult(int code, int result, Intent data) {
@@ -250,8 +305,11 @@ public class MainActivity extends Activity {
         try (OutputStream out = getContentResolver().openOutputStream(data.getData())) {
             if (out == null) throw new IOException("Destino indisponível");
             if (code == 101) out.write(reportText().getBytes("UTF-8"));
-            else if (code == 102 && lastWav != null) {
-                try (InputStream in = new FileInputStream(lastWav)) {
+            else if ((code == 102 && lastWav != null) ||
+                     (code == 103 && lastCsv != null) ||
+                     (code == 104 && lastImu != null)) {
+                File exporting = code == 102 ? lastWav : code == 103 ? lastCsv : lastImu;
+                try (InputStream in = new FileInputStream(exporting)) {
                     byte[] buf = new byte[8192];
                     int n; while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
                 }
