@@ -61,6 +61,9 @@ public final class ARCalibrationActivity extends Activity {
     private volatile boolean audioRunning=false;
     private volatile AudioRecord recorder;
     private volatile File outputWav,outputCsv;
+    // Keep EVERY segment in a session, including training before the model
+    // is frozen and independent validation afterward.
+    private final java.util.ArrayList<File> capturedSegments=new java.util.ArrayList<>();
     private int windows=0,accepted=0,timestampFails=0,arTimeFails=0;
     private volatile String arTracking="ARCore iniciando";
     private volatile String markerMode="SEM_MARCA";
@@ -405,6 +408,16 @@ public final class ARCalibrationActivity extends Activity {
             recorder=null;
             if(wav!=null)try{wav.close();}catch(Exception ignored){}
             if(csv!=null)try{csv.close();}catch(Exception ignored){}
+            synchronized(capturedSegments){
+                if(outputWav!=null && outputWav.exists() &&
+                   outputCsv!=null && outputCsv.exists()){
+                    // Includes both TRAIN and VALID captures.
+                    if(!capturedSegments.contains(outputWav))
+                        capturedSegments.add(outputWav);
+                    if(!capturedSegments.contains(outputCsv))
+                        capturedSegments.add(outputCsv);
+                }
+            }
             audioRunning=false;
             runOnUiThread(()->audioButton.setText("Iniciar áudio"));
         }
@@ -433,7 +446,8 @@ public final class ARCalibrationActivity extends Activity {
         super.onActivityResult(requestCode,resultCode,data);
         if(requestCode!=EXPORT_ZIP||resultCode!=RESULT_OK||data==null||data.getData()==null)return;
         android.net.Uri target=data.getData();
-        File wav=outputWav,csv=outputCsv;
+        java.util.ArrayList<File> files;
+        synchronized(capturedSegments){files=new java.util.ArrayList<>(capturedSegments);}
         String rows=calibration.exportRows();
         AudiovisualCalibration.Fit fit=calibration.isValidation()?
             calibration.fitted():calibration.preview();
@@ -441,8 +455,7 @@ public final class ARCalibrationActivity extends Activity {
         new Thread(()->{
             try(OutputStream destination=getContentResolver().openOutputStream(target);
                 ZipOutputStream zip=new ZipOutputStream(destination)){
-                appendFile(zip,wav);
-                appendFile(zip,csv);
+                for(File file:files)if(file.exists())appendFile(zip,file);
                 appendText(zip,"calibration_pairs.csv",rows);
                 appendText(zip,"metadata.txt",
                     "AR calibration v0.5, S25, CAMCORDER 2 channels, 48000Hz\n"+
