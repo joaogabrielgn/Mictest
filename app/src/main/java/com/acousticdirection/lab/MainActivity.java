@@ -195,8 +195,8 @@ public class MainActivity extends Activity {
             lastImu = new File(dir, "imu_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
             csvOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(lastCsv), "UTF-8"));
             imuOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(lastImu), "UTF-8"));
-            csvOut.write("frames_completed,read_complete_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,last_orientation_sensor_ns,yaw_deg,pitch_deg,roll_deg\\n");
-            imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\\n");
+            csvOut.write("frames_completed,read_complete_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,last_orientation_sensor_ns,yaw_deg,pitch_deg,roll_deg\n");
+            imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\n");
             writeLog("CSV de análise e eventos IMU serão salvos com o WAV.");
             writeLog("IMPORTANTE: tempo da leitura do áudio é aproximado, não timestamp exato do sample.");
             ar.startRecording();
@@ -226,20 +226,20 @@ public class MainActivity extends Activity {
                     SpatialDsp.Estimate[] estimates =
                         SpatialDsp.analyze(audio, n, actualChannels, actualRate);
                     StringBuilder shown = new StringBuilder(String.format(Locale.US,
-                        "%.1f s | %d ch | %d Hz\\n", frames/(double)actualRate,
+                        "%.1f s | %d ch | %d Hz\n", frames/(double)actualRate,
                         actualChannels,actualRate));
                     shown.append(String.format(Locale.US,
-                        "IMU yaw %+.1f | pitch %+.1f | roll %+.1f graus\\n",
+                        "IMU yaw %+.1f | pitch %+.1f | roll %+.1f graus\n",
                         orientation.yaw, orientation.pitch, orientation.roll));
-                    shown.append("Delay: positivo = canal B chega depois de C0\\n");
+                    shown.append("Delay: positivo = canal B chega depois de C0\n");
                     for (SpatialDsp.Estimate estimate : estimates) {
-                        shown.append(estimate.display()).append('\\n');
+                        shown.append(estimate.display()).append('\n');
                         csvOut.write(estimate.csv(frames,readCompleteBootNs,orientation));
                         csvOut.newLine();
                         assessed++;
                         if(estimate.valid) valid++;
                     }
-                    if (estimates.length == 0) shown.append("Requer pelo menos 2 canais.\\n");
+                    if (estimates.length == 0) shown.append("Requer pelo menos 2 canais.\n");
                     String imuLine;
                     while ((imuLine = motion.pollLine()) != null) {
                         imuOut.write(imuLine);
