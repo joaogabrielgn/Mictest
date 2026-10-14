@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  */
 public final class MotionTracker implements SensorEventListener {
     private final SensorManager sensors;
+    private final PoseHistory history = new PoseHistory();
     private final ConcurrentLinkedQueue<String> lines = new ConcurrentLinkedQueue<>();
     private final Sensor rotation, gyro, accelerometer;
     private volatile Snapshot latest = Snapshot.EMPTY;
@@ -49,6 +50,7 @@ public final class MotionTracker implements SensorEventListener {
     }
     public synchronized void start() {
         lines.clear();
+        history.clear();
         latest=Snapshot.EMPTY;
         enabled=true;
         if(rotation!=null)sensors.registerListener(this,rotation,SensorManager.SENSOR_DELAY_GAME);
@@ -60,6 +62,7 @@ public final class MotionTracker implements SensorEventListener {
         sensors.unregisterListener(this);
     }
     public Snapshot snapshot() {return latest;}
+    public PoseHistory.Pose poseAt(long timeNs) {return history.interpolate(timeNs);}
     public String pollLine() { return lines.poll(); }
     public void clearLines(){lines.clear();}
     @Override public void onAccuracyChanged(Sensor sensor,int accuracy) {}
@@ -72,6 +75,7 @@ public final class MotionTracker implements SensorEventListener {
                 SensorManager.getRotationMatrixFromVector(rotationMatrix,e.values);
                 SensorManager.getOrientation(rotationMatrix,angles);
                 SensorManager.getQuaternionFromVector(quaternion,e.values);
+                history.add(e.timestamp, quaternion[0],quaternion[1],quaternion[2],quaternion[3]);
                 latest=new Snapshot(e.timestamp,Math.toDegrees(angles[0]),
                     Math.toDegrees(angles[1]),Math.toDegrees(angles[2]),gx,gy,gz);
                 lines.add(String.format(Locale.US,"%d,ROT,%.8f,%.8f,%.8f,%.8f",

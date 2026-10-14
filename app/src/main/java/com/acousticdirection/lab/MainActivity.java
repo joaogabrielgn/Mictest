@@ -39,7 +39,7 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title(root, "ACOUSTIC DIRECTION LAB", 21, 0xFF62E0C3);
-        title(root, "GCC-PHAT experimental + IMU / v0.2", 14, Color.LTGRAY);
+        title(root, "Eventos + timestamps + IMU / v0.3", 14, Color.LTGRAY);
         sourceSpinner = selector(root, "Fonte", sourceNames, 2);
         channelSpinner = selector(root, "Número de canais", new String[]{"1 canal", "2 canais", "3 canais", "4 canais"}, 1);
         rateSpinner = selector(root, "Frequência", new String[]{"48000 Hz", "96000 Hz", "44100 Hz"}, 0);
@@ -56,7 +56,7 @@ public class MainActivity extends Activity {
         LinearLayout datasets = row(root);
         button(datasets, "Exportar análise CSV", 0xFF34546A, () -> export(103));
         button(datasets, "Exportar IMU CSV", 0xFF34546A, () -> export(104));
-        title(root, "TDOA / GCC-PHAT (experimental)", 17, Color.WHITE);
+        title(root, "Estalos detectados / TDOA (experimental)", 17, Color.WHITE);
         live = new TextView(this);
         live.setTextColor(0xFF9BF0DF); live.setTextSize(13);
         live.setTypeface(Typeface.MONOSPACE);
@@ -69,7 +69,8 @@ public class MainActivity extends Activity {
         log.setTextColor(Color.WHITE); log.setTextSize(12);
         log.setTypeface(Typeface.MONOSPACE); log.setTextIsSelectable(true);
         root.addView(log);
-        writeLog("Acoustic Direction Lab v0.2");
+        writeLog("Acoustic Direction Lab v0.3");
+        writeLog("Eventos analisados individualmente; timestamp audio BOOTTIME; pose IMU interpolada.");
         writeLog("Leituras de GCC-PHAT são hipóteses, não direções calibradas.");
         writeLog(motion.inventory());
         writeLog("Modelo: " + Build.MANUFACTURER + " " + Build.MODEL
@@ -165,7 +166,9 @@ public class MainActivity extends Activity {
         WavWriter wav = null;
         BufferedWriter csvOut = null, imuOut = null;
         long frames = 0;
-        int assessed = 0, valid = 0;
+        final int[] processedEvents = {0}, candidates = {0}, syncedEvents = {0};
+        EventDetector detector = null;
+        AudioClock clock = null;
         try {
             AudioFormat.Builder b = new AudioFormat.Builder().setSampleRate(rate)
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT);
@@ -176,29 +179,39 @@ public class MainActivity extends Activity {
                 .setAudioFormat(b.build())
                 .setBufferSizeInBytes(Math.max(65536, rate * channelCount))
                 .build();
-            if (ar.getState() != AudioRecord.STATE_INITIALIZED) throw new IOException("AudioRecord não inicializado");
+            if (ar.getState() != AudioRecord.STATE_INITIALIZED)
+                throw new IOException("AudioRecord não inicializado");
             current = ar;
             final int actualChannels = ar.getChannelCount();
             final int actualRate = ar.getSampleRate();
+            if (actualChannels <= 0) throw new IOException("Contagem de canais inválida");
+            detector = new EventDetector(actualChannels,actualRate);
+            clock = new AudioClock(actualRate);
+            final AudioClock audioClock = clock;
             writeLog("\n=== TESTE: " + sourceNames[sourceIndex] + ", pedido="
                 + channelCount + "ch / " + rate + "Hz ===");
             writeLog("Captura resultante: " + actualChannels + "ch / " + actualRate
                 + "Hz; session=" + ar.getAudioSessionId());
+
             File dir = getExternalFilesDir(Environment.DIRECTORY_MUSIC);
             if (dir == null) dir = getFilesDir();
             dir.mkdirs();
             String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-            lastWav = new File(dir, "mic_" + timestamp + "_" + sourceNames[sourceIndex]
+            // Paths are published only after successful file creation, to avoid exporting stale files.
+            File wavFile = new File(dir, "mic_" + timestamp + "_" + sourceNames[sourceIndex]
                 + "_" + actualChannels + "ch.wav");
-            wav = new WavWriter(lastWav, actualChannels, actualRate);
-            lastCsv = new File(dir, "analysis_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
-            lastImu = new File(dir, "imu_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
-            csvOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(lastCsv), "UTF-8"));
-            imuOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(lastImu), "UTF-8"));
-            csvOut.write("frames_completed,read_complete_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,last_orientation_sensor_ns,yaw_deg,pitch_deg,roll_deg\n");
+            File csvFile = new File(dir, "analysis_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
+            File imuFile = new File(dir, "imu_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
+            wav = new WavWriter(wavFile, actualChannels, actualRate);
+            csvOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(csvFile), "UTF-8"));
+            imuOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(imuFile), "UTF-8"));
+            lastWav=wavFile;lastCsv=csvFile;lastImu=imuFile;
+            final BufferedWriter eventOutput=csvOut;
+            final BufferedWriter motionOutput=imuOut;
+            csvOut.write("onset_frame,window_start_frame,audio_boottime_ns,audio_time_status,anchor_frame,anchor_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,trigger_ratio,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg\n");
             imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\n");
-            writeLog("CSV de análise e eventos IMU serão salvos com o WAV.");
-            writeLog("IMPORTANTE: tempo da leitura do áudio é aproximado, não timestamp exato do sample.");
+            writeLog("v0.3 salva WAV + CSV de EVENTOS + CSV de IMU.");
+            writeLog("Atraso positivo: C1 chega depois de C0; não há azimute calibrado.");
             ar.startRecording();
             if (ar.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
                 throw new IOException("Gravação não iniciou");
@@ -209,74 +222,95 @@ public class MainActivity extends Activity {
                     writeLog("[Ativo " + i + "] " + micDetails(active.get(i)));
             } catch(Exception e) { writeLog("Sem mapeamento dos microfones ativos: " + e); }
             runOnUiThread(() -> getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
-            short[] audio = new short[4096 * actualChannels];
-            long began = System.nanoTime(), updated = 0;
-            while (running && System.nanoTime() - began < 30_000_000_000L) {
-                int n = ar.read(audio, 0, audio.length, AudioRecord.READ_BLOCKING);
-                if (n < 0) throw new IOException("AudioRecord.read = " + n);
-                n -= n % actualChannels;
-                if (n <= 0) continue;
-                wav.write(audio, n);
-                frames += n / actualChannels;
-                long now = System.nanoTime();
-                if (now - updated > 250_000_000L) {
-                    updated = now;
-                    long readCompleteBootNs = android.os.SystemClock.elapsedRealtimeNanos();
-                    MotionTracker.Snapshot orientation = motion.snapshot();
-                    SpatialDsp.Estimate[] estimates =
-                        SpatialDsp.analyze(audio, n, actualChannels, actualRate);
-                    StringBuilder shown = new StringBuilder(String.format(Locale.US,
-                        "%.1f s | %d ch | %d Hz\n", frames/(double)actualRate,
-                        actualChannels,actualRate));
-                    shown.append(String.format(Locale.US,
-                        "IMU yaw %+.1f | pitch %+.1f | roll %+.1f graus\n",
-                        orientation.yaw, orientation.pitch, orientation.roll));
-                    shown.append("Delay: positivo = canal B chega depois de C0\n");
-                    for (SpatialDsp.Estimate estimate : estimates) {
-                        shown.append(estimate.display()).append('\n');
-                        csvOut.write(estimate.csv(frames,readCompleteBootNs,orientation));
-                        csvOut.newLine();
-                        assessed++;
-                        if(estimate.valid) valid++;
+            short[] audio = new short[2048 * actualChannels]; // short buffers reduce event latency
+            AudioTimestamp ts = new AudioTimestamp();
+            long began = android.os.SystemClock.elapsedRealtimeNanos();
+            long lastUi = 0;
+            while (running && android.os.SystemClock.elapsedRealtimeNanos()-began < 30_000_000_000L) {
+                int n=ar.read(audio,0,audio.length,AudioRecord.READ_BLOCKING);
+                if(n<0)throw new IOException("AudioRecord.read = "+n);
+                n-=n%actualChannels;
+                if(n==0)continue;
+                wav.write(audio,n);
+                frames += n/actualChannels;
+                long nowBoot=android.os.SystemClock.elapsedRealtimeNanos();
+                int rc=ar.getTimestamp(ts,AudioTimestamp.TIMEBASE_BOOTTIME);
+                if(rc==AudioRecord.SUCCESS) {
+                    audioClock.update(ts.framePosition,ts.nanoTime,frames,nowBoot);
+                } else audioClock.invalidate();
+
+                detector.feed(audio,n,event -> {
+                    AudioClock.Mapping mapping=audioClock.timeForFrame(event.onsetFrame);
+                    PoseHistory.Pose pose=mapping.valid ?
+                        motion.poseAt(mapping.timeNs) : motion.poseAt(-1);
+                    SpatialDsp.Estimate[] estimates=
+                        SpatialDsp.analyze(event.pcm,event.pcm.length,actualChannels,actualRate);
+                    processedEvents[0]++;
+                    if(mapping.valid && pose.valid)syncedEvents[0]++;
+                    StringBuilder details = new StringBuilder();
+                    details.append("Evento ").append(processedEvents[0]).append(" | ")
+                        .append(mapping.status).append(" | ").append(pose.quality).append('\n');
+                    for(SpatialDsp.Estimate est:estimates) {
+                        if(est.valid)candidates[0]++;
+                        try {
+                            eventOutput.write(String.format(Locale.US,
+                                "%d,%d,%d,%s,%d,%d,%d,%.5f,%.4f,%.5f,%.5f,%.3f,%.3f,%.7f,%.5f,%d,%s,%.2f,%s,%d,%.8f,%.8f,%.8f,%.8f,%.3f,%.3f,%.3f\n",
+                                event.onsetFrame,event.windowStartFrame,
+                                mapping.valid?mapping.timeNs:-1,mapping.status,
+                                audioClock.anchorFrame(),audioClock.anchorTimeNs(),
+                                est.channel,est.delaySamples,est.delayUs,est.peak,
+                                est.contrast,est.level0Db,est.levelBDb,est.clippingFraction,
+                                est.difference,est.valid?1:0,est.reason,event.triggerRatio,
+                                pose.quality,pose.timeNs,pose.q[0],pose.q[1],pose.q[2],pose.q[3],
+                                pose.yaw,pose.pitch,pose.roll));
+                        } catch(IOException e) {throw new IllegalStateException("CSV de evento: "+e.getMessage(),e);}
+                        details.append(est.display()).append('\n');
                     }
-                    if (estimates.length == 0) shown.append("Requer pelo menos 2 canais.\n");
-                    String imuLine;
-                    while ((imuLine = motion.pollLine()) != null) {
-                        imuOut.write(imuLine);
-                        imuOut.newLine();
-                    }
-                    final String result = shown.toString();
-                    runOnUiThread(() -> live.setText(result));
+                    final String screen=details.toString();
+                    runOnUiThread(() -> live.setText(screen));
+                });
+                String imuLine;
+                while((imuLine=motion.pollLine())!=null){
+                    motionOutput.write(imuLine);motionOutput.newLine();
+                }
+                if(nowBoot-lastUi>1_000_000_000L) {
+                    lastUi=nowBoot;
+                    long seconds=frames/actualRate;
+                    final String status=String.format(Locale.US,
+                        "t=%ds: %d estalos detectados, %d candidatos, %d pareados com IMU | AudioTimestamp OK=%d, rejeitado=%d",
+                        seconds,processedEvents[0],candidates[0],syncedEvents[0],
+                        audioClock.accepted(),audioClock.rejected());
+                    writeLog(status);
                 }
             }
-            writeLog("Gravados " + frames + " frames; arquivo " + lastWav.getName());
-            writeLog("Janelas avaliadas: " + assessed + "; candidatos: " + valid
-                + " (heurística, não porcentagem de acerto).");
-            writeLog("CSV: " + lastCsv.getName() + "; IMU: " + lastImu.getName());
-        } catch (Exception e) {
-            writeLog("ERRO de captura: " + e);
-            runOnUiThread(() -> live.setText("Falha: " + e.getMessage()));
+            writeLog("Gravados "+frames+" frames; "+wavFile.getName());
+            writeLog("Estalos detectados="+detector.detectedCount()+", analisados="
+                +processedEvents[0]+", descartados por fila="+detector.overflowCount()
+                +", janelas DSP candidatas="+candidates[0]+", sincronizados IMU="+syncedEvents[0]);
+            writeLog("AudioTimestamp aceitos="+clock.accepted()+", rejeitados="
+                +clock.rejected()+"; ausências também podem ocorrer.");
+            writeLog("Arquivos: "+csvFile.getName()+" e "+imuFile.getName());
+        } catch(Exception e) {
+            writeLog("ERRO de captura: "+e);
+            runOnUiThread(() -> live.setText("Falha: "+e.getMessage()));
         } finally {
-            running = false;
+            running=false;
             motion.stop();
-            if (ar != null) {
-                try { ar.stop(); } catch (Exception ignored) {}
-                ar.release();
-            }
-            current = null;
-            if (imuOut != null) {
-                try {
+            if(ar!=null){ try{ ar.stop(); }catch(Exception ignored){} ar.release(); }
+            current=null;
+            if(imuOut!=null){
+                try{
                     String imuLine;
-                    while ((imuLine = motion.pollLine()) != null) {
-                        imuOut.write(imuLine); imuOut.newLine();
+                    while((imuLine=motion.pollLine())!=null){
+                        imuOut.write(imuLine);imuOut.newLine();
                     }
-                } catch(Exception ignored) {}
+                }catch(Exception ignored){}
             }
-            if (csvOut != null) try { csvOut.close(); } catch(Exception ignored) {}
-            if (imuOut != null) try { imuOut.close(); } catch(Exception ignored) {}
-            if (wav != null) try { wav.close(); } catch (Exception e) { writeLog("Falha WAV: " + e); }
+            if(csvOut!=null)try{csvOut.close();}catch(Exception e){writeLog("Falha CSV: "+e);}
+            if(imuOut!=null)try{imuOut.close();}catch(Exception e){writeLog("Falha IMU: "+e);}
+            if(wav!=null)try{wav.close();}catch(Exception e){writeLog("Falha WAV: "+e);}
             runOnUiThread(() -> {
-                startButton.setEnabled(true); stopButton.setEnabled(false);
+                startButton.setEnabled(true);stopButton.setEnabled(false);
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             });
         }
