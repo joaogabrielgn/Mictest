@@ -18,13 +18,13 @@ public class MainActivity extends Activity {
     private final int[] sourceTypes = {MediaRecorder.AudioSource.UNPROCESSED, MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.CAMCORDER, MediaRecorder.AudioSource.VOICE_RECOGNITION};
     private final int[] rates = {48000, 96000, 44100};
     private final StringBuilder report = new StringBuilder();
-    private Spinner sourceSpinner, channelSpinner, rateSpinner, referenceSpinner;
+    private Spinner sourceSpinner, channelSpinner, rateSpinner, referenceSpinner, modeSpinner;
     private Button startButton, stopButton;
     private TextView live, log;
     private AudioManager manager;
     private volatile boolean running = false;
     private volatile AudioRecord current;
-    private File lastWav, lastCsv, lastImu;
+    private File lastWav, lastCsv, lastImu, lastContinuousCsv;
     private MotionTracker motion;
 
     @Override public void onCreate(Bundle state) {
@@ -39,7 +39,9 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title(root, "ACOUSTIC DIRECTION LAB", 21, 0xFF62E0C3);
-        title(root, "Eixo empírico + IMU / v0.3.2", 14, Color.LTGRAY);
+        title(root, "Sons contínuos + calibração / v0.4", 14, Color.LTGRAY);
+        modeSpinner=selector(root,"Modo de análise",
+            new String[]{"SOM_CONTINUO","ESTALOS_CALIBRACAO"},0);
         sourceSpinner = selector(root, "Fonte", sourceNames, 2);
         channelSpinner = selector(root, "Número de canais", new String[]{"1 canal", "2 canais", "3 canais", "4 canais"}, 1);
         rateSpinner = selector(root, "Frequência", new String[]{"48000 Hz", "96000 Hz", "44100 Hz"}, 0);
@@ -58,7 +60,9 @@ public class MainActivity extends Activity {
         LinearLayout datasets = row(root);
         button(datasets, "Exportar análise CSV", 0xFF34546A, () -> export(103));
         button(datasets, "Exportar IMU CSV", 0xFF34546A, () -> export(104));
-        title(root, "Estalos detectados / TDOA (experimental)", 17, Color.WHITE);
+        LinearLayout continuousExports=row(root);
+        button(continuousExports,"Exportar contínuo CSV",0xFF34546A,()->export(105));
+        title(root, "Estimativa contínua / TDOA (experimental)", 17, Color.WHITE);
         live = new TextView(this);
         live.setTextColor(0xFF9BF0DF); live.setTextSize(13);
         live.setTypeface(Typeface.MONOSPACE);
@@ -71,7 +75,9 @@ public class MainActivity extends Activity {
         log.setTextColor(Color.WHITE); log.setTextSize(12);
         log.setTypeface(Typeface.MONOSPACE); log.setTextIsSelectable(true);
         root.addView(log);
-        writeLog("Acoustic Direction Lab v0.3.2");
+        writeLog("Acoustic Direction Lab v0.4");
+        writeLog("SOM_CONTINUO: janelas 85 ms/hop 21 ms; GCC-PHAT multibanda.");
+        writeLog("Não separa fontes; a banda dominante não garante a fonte mais alta.");
         writeLog("Perfil S25 PILOTO: microfone inferior -434,7 us, centro -2,8 us, superior +472,1 us.");
         writeLog("Índice 1D não é ângulo nem localização validada.");
         writeLog("Eventos analisados individualmente; timestamp audio BOOTTIME; pose IMU interpolada.");
@@ -160,15 +166,18 @@ public class MainActivity extends Activity {
         final int sourceIndex = sourceSpinner.getSelectedItemPosition();
         final int channels = channelSpinner.getSelectedItemPosition() + 1;
         final int rate = rates[rateSpinner.getSelectedItemPosition()];
+        final boolean continuousMode=modeSpinner.getSelectedItemPosition()==0;
+        final String knownReference=(String)referenceSpinner.getSelectedItem();
         running = true; startButton.setEnabled(false); stopButton.setEnabled(true);
         motion.start();
-        new Thread(() -> record(sourceIndex, channels, rate), "CapturePCM").start();
+        new Thread(() -> record(sourceIndex, channels, rate,continuousMode,knownReference), "CapturePCM").start();
     }
-    private void record(int sourceIndex, int channelCount, int rate) {
+    private void record(int sourceIndex, int channelCount, int rate,
+                        boolean continuousMode,String knownReference) {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         AudioRecord ar = null;
         WavWriter wav = null;
-        BufferedWriter csvOut = null, imuOut = null;
+        BufferedWriter csvOut = null, imuOut = null, continuousOut = null;
         long frames = 0;
         final int[] processedEvents = {0}, candidates = {0}, syncedEvents = {0}, robustCount = {0}, repeatableCount={0};
         final String knownReference=(String)referenceSpinner.getSelectedItem();
@@ -193,6 +202,10 @@ public class MainActivity extends Activity {
             detector = new EventDetector(actualChannels,actualRate);
             clock = new AudioClock(actualRate);
             final AudioClock audioClock = clock;
+            final ContinuousTracker tracker=continuousMode && actualChannels>=2 ?
+                new ContinuousTracker(actualChannels,actualRate):null;
+            final int[] continuousCount={0},continuousReliable={0};
+            final long[] lastContinuousUi={0};
             final DelayStability[] stability=new DelayStability[Math.max(0,actualChannels-1)];
             for(int i=0;i<stability.length;i++)stability[i]=new DelayStability();
             writeLog("\n=== TESTE: " + sourceNames[sourceIndex] + ", pedido="
@@ -209,14 +222,22 @@ public class MainActivity extends Activity {
                 + "_" + actualChannels + "ch.wav");
             File csvFile = new File(dir, "analysis_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
             File imuFile = new File(dir, "imu_" + timestamp + "_" + sourceNames[sourceIndex] + ".csv");
+            File continuousFile=new File(dir,"continuous_"+timestamp+"_"+sourceNames[sourceIndex]+".csv");
             wav = new WavWriter(wavFile, actualChannels, actualRate);
             csvOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(csvFile), "UTF-8"));
             imuOut = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(imuFile), "UTF-8"));
+            if(tracker!=null)continuousOut=new BufferedWriter(new OutputStreamWriter(
+                new FileOutputStream(continuousFile),"UTF-8"));
             lastWav=wavFile;lastCsv=csvFile;lastImu=imuFile;
+            lastContinuousCsv=tracker!=null?continuousFile:null;
             final BufferedWriter eventOutput=csvOut;
             final BufferedWriter motionOutput=imuOut;
+            final BufferedWriter continuousOutput=continuousOut;
             csvOut.write("onset_frame,window_start_frame,audio_boottime_ns,audio_time_status,anchor_frame,anchor_boottime_ns,channel_B,lag_samples,delay_B_minus_C0_us,peak_over_rms,contrast,rms_C0_dbfs,rms_B_dbfs,clipping_fraction,relative_difference,valid,reason,trigger_ratio,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,first_rise_C0_sample,first_rise_B_sample,first_rise_delay_us,first_rise_status,full_window_delay_us,early_full_delta_us,stable_neighbors,stable_median_us,stable_mad_us,robust_candidate,robust_reason,reference_label,axis_profile,empirical_axis_score,empirical_sector,exceeds_ideal_air_limit,ideal_air_excess_us,acoustic_repeatable,first_onset_agree\n");
             imuOut.write("sensor_event_boottime_ns,type,value0,value1,value2,value3\n");
+            if(continuousOutput!=null)continuousOutput.write(
+                "center_frame,audio_boottime_ns,audio_time_status,pose_status,pose_time_ns,qw,qx,qy,qz,yaw_deg,pitch_deg,roll_deg,level_dbfs,level_diff_db,spectral_flatness,dominant_band,raw_delay_us,smoothed_delay_us,quality_status,reliable,valid_bands,agreeing_bands,empirical_axis_score,empirical_axis_sector,reference_label,low_delay_us,low_peak,low_contrast,low_reason,mid_delay_us,mid_peak,mid_contrast,mid_reason,high_delay_us,high_peak,high_contrast,high_reason\n");
+            if(continuousMode)writeLog("MODO CONTÍNUO: grave, médio e agudo, nenhuma detecção de estalo requerida.");
             writeLog("v0.3.2: dois níveis: qualidade de TDOA + repetibilidade em pose semelhante.");
             writeLog("Referência rotulada pelo usuário: "+knownReference);
             writeLog("Perfil 1D piloto: MIC_INFERIOR=-434,7; CENTRO=-2,8; MIC_SUPERIOR=+472,1 us.");
@@ -236,7 +257,8 @@ public class MainActivity extends Activity {
             AudioTimestamp ts = new AudioTimestamp();
             long began = android.os.SystemClock.elapsedRealtimeNanos();
             long lastUi = 0;
-            while (running && android.os.SystemClock.elapsedRealtimeNanos()-began < 30_000_000_000L) {
+            while (running && android.os.SystemClock.elapsedRealtimeNanos()-began <
+                    (continuousMode?120_000_000_000L:30_000_000_000L)) {
                 int n=ar.read(audio,0,audio.length,AudioRecord.READ_BLOCKING);
                 if(n<0)throw new IOException("AudioRecord.read = "+n);
                 n-=n%actualChannels;
@@ -249,7 +271,44 @@ public class MainActivity extends Activity {
                     audioClock.update(ts.framePosition,ts.nanoTime,frames,nowBoot);
                 } else audioClock.invalidate();
 
-                detector.feed(audio,n,event -> {
+                if(tracker!=null)tracker.feed(audio,n,window -> {
+                    continuousCount[0]++;
+                    if(window.reliable)continuousReliable[0]++;
+                    AudioClock.Mapping mapped=audioClock.timeForFrame(window.centerFrame);
+                    PoseHistory.Pose pose=mapped.valid?motion.poseAt(mapped.timeNs):motion.poseAt(-1);
+                    EmpiricalAxis.Axis axis=Double.isFinite(window.rawDelayUs)?
+                        EmpiricalAxis.estimate(window.rawDelayUs):null;
+                    try {
+                        continuousOutput.write(String.format(Locale.US,
+                            "%d,%d,%s,%s,%d,%.8f,%.8f,%.8f,%.8f,%.3f,%.3f,%.3f,%.3f,%.3f,%.5f,%s,%.4f,%.4f,%s,%d,%d,%d,%.5f,%s,%s",
+                            window.centerFrame,mapped.valid?mapped.timeNs:-1,mapped.status,
+                            pose.quality,pose.timeNs,pose.q[0],pose.q[1],pose.q[2],pose.q[3],
+                            pose.yaw,pose.pitch,pose.roll,window.levelDb,window.levelDifferenceDb,
+                            window.flatness,window.dominantBand,window.rawDelayUs,window.smoothedDelayUs,
+                            window.status,window.reliable?1:0,window.validBands,
+                            window.agreeingBands,axis!=null?axis.rawScore:Double.NaN,
+                            axis!=null?axis.sector:"SEM_ESTIMATIVA",knownReference));
+                        for(ContinuousTracker.Band band:window.bands)
+                            continuousOutput.write(String.format(Locale.US,",%.4f,%.4f,%.4f,%s",
+                                band.delayUs,band.peakRatio,band.contrast,band.reason));
+                        continuousOutput.newLine();
+                    } catch(IOException e){throw new IllegalStateException("CSV contínuo: "+e.getMessage(),e);}
+                    long uiTime=android.os.SystemClock.elapsedRealtimeNanos();
+                    if(uiTime-lastContinuousUi[0]>180_000_000L){
+                        lastContinuousUi[0]=uiTime;
+                        StringBuilder output=new StringBuilder(window.summary());
+                        if(mapped.valid && pose.valid)
+                            output.append(String.format(Locale.US,
+                                "\nIMU: yaw %+.1f | pitch %+.1f | roll %+.1f",pose.yaw,pose.pitch,pose.roll));
+                        if(window.reliable && axis!=null){
+                            output.append("\n").append(axis.display());
+                            output.append("\nPERFIL PILOTO 1D; não é ângulo 3D.");
+                        }
+                        final String currentView=output.toString();
+                        runOnUiThread(()->live.setText(currentView));
+                    }
+                });
+                if(!continuousMode)detector.feed(audio,n,event -> {
                     AudioClock.Mapping mapping=audioClock.timeForFrame(event.onsetFrame);
                     PoseHistory.Pose pose=mapping.valid ?
                         motion.poseAt(mapping.timeNs) : motion.poseAt(-1);
@@ -332,6 +391,8 @@ public class MainActivity extends Activity {
                     writeLog(status);
                 }
             }
+            if(continuousMode)writeLog("Janelas contínuas="+continuousCount[0]+
+                ", multibanda OK="+continuousReliable[0]+"; arquivo="+continuousFile.getName());
             writeLog("Gravados "+frames+" frames; "+wavFile.getName());
             writeLog("Estalos detectados="+detector.detectedCount()+", analisados="
                 +processedEvents[0]+", descartados por fila="+detector.overflowCount()
@@ -357,6 +418,7 @@ public class MainActivity extends Activity {
             }
             if(csvOut!=null)try{csvOut.close();}catch(Exception e){writeLog("Falha CSV: "+e);}
             if(imuOut!=null)try{imuOut.close();}catch(Exception e){writeLog("Falha IMU: "+e);}
+            if(continuousOut!=null)try{continuousOut.close();}catch(Exception e){writeLog("Falha CSV contínuo: "+e);}
             if(wav!=null)try{wav.close();}catch(Exception e){writeLog("Falha WAV: "+e);}
             runOnUiThread(() -> {
                 startButton.setEnabled(true);stopButton.setEnabled(false);
@@ -371,14 +433,16 @@ public class MainActivity extends Activity {
     }
     private void export(int what) {
         if (running) { Toast.makeText(this, "Pare a gravação antes de exportar.", Toast.LENGTH_SHORT).show(); return; }
-        if ((what == 102 && lastWav == null) || (what == 103 && lastCsv == null) || (what == 104 && lastImu == null)) {
+        if ((what == 102 && lastWav == null) || (what == 103 && lastCsv == null) ||
+            (what == 104 && lastImu == null) || (what == 105 && lastContinuousCsv == null)) {
             Toast.makeText(this, "Grave áudio antes de exportar WAV.", Toast.LENGTH_LONG).show(); return;
         }
         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.setType(what == 102 ? "audio/wav" : what == 101 ? "text/plain" : "text/csv");
         String filename = what == 101 ? "diagnostico_s25.txt" :
-            what == 102 ? lastWav.getName() : what == 103 ? lastCsv.getName() : lastImu.getName();
+            what == 102 ? lastWav.getName() : what == 103 ? lastCsv.getName() :
+                what == 104 ? lastImu.getName() : lastContinuousCsv.getName();
         i.putExtra(Intent.EXTRA_TITLE, filename);
         startActivityForResult(i, what);
     }
@@ -390,8 +454,10 @@ public class MainActivity extends Activity {
             if (code == 101) out.write(reportText().getBytes("UTF-8"));
             else if ((code == 102 && lastWav != null) ||
                      (code == 103 && lastCsv != null) ||
-                     (code == 104 && lastImu != null)) {
-                File exporting = code == 102 ? lastWav : code == 103 ? lastCsv : lastImu;
+                     (code == 104 && lastImu != null) ||
+                     (code == 105 && lastContinuousCsv != null)) {
+                File exporting = code == 102 ? lastWav : code == 103 ? lastCsv :
+                    code == 104 ? lastImu : lastContinuousCsv;
                 try (InputStream in = new FileInputStream(exporting)) {
                     byte[] buf = new byte[8192];
                     int n; while ((n = in.read(buf)) != -1) out.write(buf, 0, n);

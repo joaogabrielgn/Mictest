@@ -194,7 +194,7 @@ public final class SpatialDsp {
     }
 
     /** In-place radix-2 FFT, forward e^(-i*w*t). */
-    private static void fft(double[] re, double[] im, boolean inverse) {
+    static void fft(double[] re, double[] im, boolean inverse) {
         int n = re.length;
         for (int i=1,j=0;i<n;i++) {
             int bit=n>>1;
