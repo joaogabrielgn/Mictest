@@ -11,6 +11,7 @@ Abra [GitHub Actions](https://github.com/joaogabrielgn/Mictest/actions), selecio
 ### UI redesenhada
 
 - Uma nova tela inicial limpa possui três cartões: **Calibração com câmera**, **Teste dos microfones** e **Arquivos e análises**. O antigo laboratório continua acessível como modo técnico.
+- **Arquivos e análises** abre agora um navegador real dos WAVs/CSVs locais mesmo depois que o app foi fechado. É possível visualizar uma amostra do CSV, selecionar arquivos e exportar um ZIP. O ZIP dessa tela guarda os **dados brutos selecionados**; para obter o summary.json e os pares TRAIN/VALID, use o botão Exportar da sessão AR antes de sair.
 - A tela de AR prioriza **câmera em tela cheia**, marcador verde da fonte **escolhida manualmente**, barra de três passos, quatro métricas (pares, amplitude de projeção, qualidade, MAE) e um único botão contextual grande. Botões secundários Reiniciar e Exportar; estatísticas e timestamps ficam em **Detalhes técnicos** recolhível.
 - Estados inequívocos: `IDLE → SOURCE_MARKED → CALIBRATING → READY_TO_FREEZE → VALIDATING → DONE`. O botão nunca tenta congelar o perfil enquanto o áudio está ativo. A operação congela definitivamente o perfil. **VALID requer gravação subsequente e amostras com timestamp posterior ao congelamento.**
 - O fluxo recomenda: marcar a fonte, iniciar áudio, girar/inclinar devagar, parar, congelar, **iniciar nova validação**, parar, exportar.
@@ -61,3 +62,7 @@ Se o usuário repetiu uma etapa, os segmentos anteriores também são mantidos n
 - A build passa por testes JVM, APK debug e revisão no Galaxy S25.
 
 O app continua um instrumento **experimental**, não um localizador de fontes simultâneas nem um sistema de medição angular certificado.
+
+### Indicadores visuais na câmera
+
+Na validação, após uma solução 3D observável, são mostrados **dois marcadores diferentes**: verde para a posição da fonte **marcada pelo usuário** e âmbar para a direção **estimada apenas pelo áudio e movimentos**. Se o modelo não tiver dados suficientes, o segundo marcador permanece oculto. A posição dos marcadores não deve ser interpretada como erro angular validado em laboratório. A área técnica recolhível permite alterar o limiar mínimo do score heurístico (40–75%, padrão 58%).

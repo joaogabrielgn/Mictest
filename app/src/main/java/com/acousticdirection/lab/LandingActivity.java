@@ -54,7 +54,7 @@ public final class LandingActivity extends Activity {
         card(column,"03","Arquivos e análises","Exportação",
             "Abra o laboratório técnico para revisar e "+
             "exportar WAV, CSV e sensores.",
-            CARD,()->startActivity(new Intent(this,MainActivity.class)));
+            CARD,()->startActivity(new Intent(this,SessionsActivity.class)));
         TextView footer=label("v0.5.1 • Pesquisa experimental • Sem IA\n"+
             "A localização 3D ainda depende de validação acústica.",11,MUTED,false);
         LinearLayout.LayoutParams f=new LinearLayout.LayoutParams(-1,-2);
