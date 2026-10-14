@@ -32,6 +32,7 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
     public interface Listener {
         void onVisual(int x,int y,boolean visible,String referenceMode,
                       String tracking,String description);
+        void onPrediction(int x,int y,boolean visible);
         void onMark(String referenceMode,float xPx,float yPx,int viewWidth,int viewHeight,
                     float[] projection);
         void onError(String error);
@@ -40,6 +41,7 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
     private final ArFrameBridge poseBridge;
     private final FrameClockGate clockGate;
     private volatile Session session;
+    private volatile double[] predictedWorld;
     private int texture=-1,program=-1,attrPos,attrUv,textureUniform;
     private int width=1,height=1;
     private boolean changed=true,textureSet=false;
@@ -56,6 +58,9 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
     public ArCameraRenderer(ArFrameBridge bridge,FrameClockGate clockGate,Listener listener){
         this.listener=listener;this.poseBridge=bridge;this.clockGate=clockGate;
     }
+    public void setPredictedWorld(double[] world){
+        predictedWorld=world==null?null:world.clone();
+    }
     public void setSession(Session session){
         this.session=session;textureSet=false;changed=true;
         previousQ=null;previousNs=0;clockGate.reset();poseBridge.clear();
@@ -64,6 +69,7 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
     public synchronized void clearMark(){
         if(sourceAnchor!=null){sourceAnchor.detach();sourceAnchor=null;}
         fixedBearing=null;markPosition=null;mode="SEM_MARCA";
+        predictedWorld=null;
         poseBridge.clear();
     }
     public synchronized boolean hasMark(){return fixedBearing!=null||sourceAnchor!=null;}
@@ -136,14 +142,16 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
             drawBackground();
             Camera camera=frame.getCamera();
             if(camera.getTrackingState()!=TrackingState.TRACKING){
-                showStatus(-1,-1,false,"ARCore: sem rastreamento","Mova devagar em ambiente iluminado");
+                showStatus(-1,-1,false,"ARCore: sem rastreamento",
+                    "Mova devagar em ambiente iluminado",-1,-1,false);
                 return;
             }
             float x,y;
             synchronized(this){x=tapX;y=tapY;tapX=tapY=-1;}
             if(x>=0 && y>=0)mark(frame,camera,x,y);
             if(!hasMark()){
-                showStatus(-1,-1,false,"ARCore rastreando","Toque na fonte sonora");
+                showStatus(-1,-1,false,"ARCore rastreando",
+                    "Toque na fonte sonora",-1,-1,false);
                 return;
             }
             Pose cameraPose=camera.getDisplayOrientedPose();
@@ -186,15 +194,29 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
             float[] projected=project(camera,position);
             boolean visible=projected[2]>0 && projected[0]>=0 && projected[0]<=width &&
                 projected[1]>=0 && projected[1]<=height;
+            double[] prediction=predictedWorld;
+            int predX=-1,predY=-1;
+            boolean predictionVisible=false;
+            if(prediction!=null && prediction.length==3){
+                float[] visualPrediction=project(camera,new double[]{
+                    cameraPosition[0]+prediction[0]*4,
+                    cameraPosition[1]+prediction[1]*4,
+                    cameraPosition[2]+prediction[2]*4});
+                predX=(int)visualPrediction[0];predY=(int)visualPrediction[1];
+                predictionVisible=visualPrediction[2]>0 &&
+                    predX>=0 && predX<=width && predY>=0 && predY<=height;
+            }
             showStatus((int)projected[0],(int)projected[1],visible,
                 "ARCore TRACKING",!compatible?
                 "Relógio da câmera: "+clockGate.status() :
                 String.format(java.util.Locale.US,"Quadro %.0f ms | %s",
                     clockGate.medianFrameAgeMs(),
                     sourceAnchor!=null?"Âncora estável":
-                    trans>.15?"Mantenha o celular no mesmo lugar":"Direção marcada"));
+                    trans>.15?"Mantenha o celular no mesmo lugar":"Direção marcada"),
+                predX,predY,predictionVisible);
         }catch(Exception e){
-            showStatus(-1,-1,false,"Falha de frame ARCore",e.getClass().getSimpleName());
+            showStatus(-1,-1,false,"Falha de frame ARCore",
+                e.getClass().getSimpleName(),-1,-1,false);
         }
     }
     private volatile int displayRotation=Surface.ROTATION_0;
@@ -271,10 +293,13 @@ public final class ArCameraRenderer implements GLSurfaceView.Renderer {
             (out[0]/out[3]+1)*width*.5f,
             (1-out[1]/out[3])*height*.5f,depth};
     }
-    private void showStatus(int x,int y,boolean visible,String tracking,String description){
+    private void showStatus(int x,int y,boolean visible,String tracking,
+                            String description,int predX,int predY,boolean predVisible){
         long now=SystemClock.elapsedRealtimeNanos();
         if(now-lastUi<100_000_000L)return;
-        lastUi=now;listener.onVisual(x,y,visible,mode,tracking,description);
+        lastUi=now;
+        listener.onVisual(x,y,visible,mode,tracking,description);
+        listener.onPrediction(predX,predY,predVisible);
     }
     private static double[] translation(Pose pose){
         return new double[]{pose.tx(),pose.ty(),pose.tz()};

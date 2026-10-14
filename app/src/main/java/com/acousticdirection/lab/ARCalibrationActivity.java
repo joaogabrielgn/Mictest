@@ -117,10 +117,14 @@ public final class ARCalibrationActivity extends Activity {
                     refresh();
                 });
             }
+            @Override public void onPrediction(int x,int y,boolean visible){
+                runOnUiThread(()->overlay.updatePrediction(x,y,visible));
+            }
             @Override public void onMark(String mode,float x,float y,int w,int h,float[] projection){
                 runOnUiThread(()->{
                     if(threadActive)return;
                     calibration.clear();solver.reset();bridge.clear();
+                    renderer.setPredictedWorld(null);overlay.updatePrediction(-1,-1,false);
                     outputFiles.clear();routes.clear();
                     direction3d=null;lastAngularError=Double.NaN;
                     markMode=mode;
@@ -336,6 +340,7 @@ public final class ARCalibrationActivity extends Activity {
             if(!trained.valid){flow.ready(false);refresh();return;}
             AudiovisualCalibration.Fit frozen=calibration.freeze();
             if(frozen.valid){
+                renderer.setPredictedWorld(null);
                 flow.freeze(SystemClock.elapsedRealtimeNanos());
                 solver.reset();direction3d=null;lastAngularError=Double.NaN;
             }
@@ -397,6 +402,7 @@ public final class ARCalibrationActivity extends Activity {
     private void reset(){
         if(threadActive)return;
         calibration.clear();solver.reset();bridge.clear();clockGate.reset();
+        renderer.setPredictedWorld(null);overlay.updatePrediction(-1,-1,false);
         outputFiles.clear();routes.clear();direction3d=null;
         lastAngularError=Double.NaN;
         try{flow.clear();}catch(Exception ignored){}
@@ -562,6 +568,7 @@ public final class ARCalibrationActivity extends Activity {
                 WorldDirectionSolver.Result r=solver.addProjection(event.timeNs,
                     pose.sensorQuaternion,projected,true);
                 direction3d=r;
+                renderer.setPredictedWorld(r.available?r.world:null);
                 if(r.available){
                     double[] gt=pose.sourceWorld;
                     double dot=r.world[0]*gt[0]+r.world[1]*gt[1]+r.world[2]*gt[2];
